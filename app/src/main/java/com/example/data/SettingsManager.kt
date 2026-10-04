@@ -15,6 +15,8 @@ enum class ThemeMode {
 data class AppSettings(
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val dynamicColor: Boolean = true,
+    val wifiOnly: Boolean = false,
+    val autoRetry: Boolean = true,
     val vibrateOnComplete: Boolean = true,
     val autoClearOnStart: Boolean = true
 )
@@ -31,12 +33,16 @@ class SettingsManager(context: Context) {
         val themeStr = prefs.getString(KEY_THEME_MODE, ThemeMode.SYSTEM.name) ?: ThemeMode.SYSTEM.name
         val theme = try { ThemeMode.valueOf(themeStr) } catch (_: Exception) { ThemeMode.SYSTEM }
         val dynamic = prefs.getBoolean(KEY_DYNAMIC_COLOR, true)
+        val wifi = prefs.getBoolean(KEY_WIFI_ONLY, false)
+        val retry = prefs.getBoolean(KEY_AUTO_RETRY, true)
         val vibrate = prefs.getBoolean(KEY_VIBRATE, true)
         val autoClear = prefs.getBoolean(KEY_AUTO_CLEAR, true)
 
         return AppSettings(
             themeMode = theme,
             dynamicColor = dynamic,
+            wifiOnly = wifi,
+            autoRetry = retry,
             vibrateOnComplete = vibrate,
             autoClearOnStart = autoClear
         )
@@ -52,6 +58,16 @@ class SettingsManager(context: Context) {
         _settings.value = _settings.value.copy(dynamicColor = enabled)
     }
 
+    fun setWifiOnly(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_WIFI_ONLY, enabled).apply()
+        _settings.value = _settings.value.copy(wifiOnly = enabled)
+    }
+
+    fun setAutoRetry(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_AUTO_RETRY, enabled).apply()
+        _settings.value = _settings.value.copy(autoRetry = enabled)
+    }
+
     fun setVibrateOnComplete(enabled: Boolean) {
         prefs.edit().putBoolean(KEY_VIBRATE, enabled).apply()
         _settings.value = _settings.value.copy(vibrateOnComplete = enabled)
@@ -65,6 +81,8 @@ class SettingsManager(context: Context) {
     companion object {
         private const val KEY_THEME_MODE = "key_theme_mode"
         private const val KEY_DYNAMIC_COLOR = "key_dynamic_color"
+        private const val KEY_WIFI_ONLY = "key_wifi_only"
+        private const val KEY_AUTO_RETRY = "key_auto_retry"
         private const val KEY_VIBRATE = "key_vibrate"
         private const val KEY_AUTO_CLEAR = "key_auto_clear"
     }

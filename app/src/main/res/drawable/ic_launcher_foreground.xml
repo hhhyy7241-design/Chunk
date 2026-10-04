@@ -4,33 +4,83 @@
     android:viewportWidth="108"
     android:viewportHeight="108">
 
-    <!-- Top floating chunk 1 (Left) -->
+    <!-- Ambient ground contact shadow -->
     <path
-        android:fillColor="#0284C7"
-        android:pathData="M33,31h18c1.66,0 3,1.34 3,3v6c0,1.66 -1.34,3 -3,3h-18c-1.66,0 -3,-1.34 -3,-3v-6c0,-1.66 1.34,-3 3,-3z" />
+        android:fillColor="#150F172A"
+        android:pathData="M34,79 Q54,84 74,79 Q54,74 34,79 Z" />
 
-    <!-- Top floating chunk 2 (Right) -->
-    <path
-        android:fillColor="#0EA5E9"
-        android:pathData="M57,31h18c1.66,0 3,1.34 3,3v6c0,1.66 -1.34,3 -3,3h-18c-1.66,0 -3,-1.34 -3,-3v-6c0,-1.66 1.34,-3 3,-3z" />
-
-    <!-- Center dynamic download arrow in deep vibrant sapphire -->
+    <!-- Isometric Modular Cube: Left Face (Deep Sapphire) -->
     <path
         android:fillColor="#0369A1"
-        android:pathData="M51,36h6v17h7.5l-10.5,13 -10.5,-13h7.5z" />
+        android:pathData="M34,45 L54,56 L54,76 L34,65 Z" />
 
-    <!-- Bottom chunk platform left -->
+    <!-- Isometric Modular Cube: Right Face (Vibrant Cobalt Azure) -->
     <path
         android:fillColor="#0284C7"
-        android:pathData="M30,68h19c1.66,0 3,1.34 3,3v6c0,1.66 -1.34,3 -3,3h-19c-1.66,0 -3,-1.34 -3,-3v-6c0,-1.66 1.34,-3 3,-3z" />
+        android:pathData="M54,56 L74,45 L74,65 L54,76 Z" />
 
-    <!-- Bottom chunk platform right -->
+    <!-- Isometric Modular Cube: Top Face (High-tech Sky Blue) -->
     <path
         android:fillColor="#38BDF8"
-        android:pathData="M55,68h23c1.66,0 3,1.34 3,3v6c0,1.66 -1.34,3 -3,3h-23c-1.66,0 -3,-1.34 -3,-3v-6c0,-1.66 1.34,-3 3,-3z" />
+        android:pathData="M54,34 L74,45 L54,56 L34,45 Z" />
 
-    <!-- Solid foundation bar -->
+    <!-- Modular Chunk Partition Seams -->
+    <!-- Left Face seams -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#1E293B"
+        android:strokeAlpha="0.35"
+        android:strokeWidth="1.2"
+        android:pathData="M44,50.5 L44,70.5 M34,55 L54,66" />
+
+    <!-- Right Face seams -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFF"
+        android:strokeAlpha="0.45"
+        android:strokeWidth="1.2"
+        android:pathData="M64,50.5 L64,70.5 M54,66 L74,55" />
+
+    <!-- Top Face seams -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFF"
+        android:strokeAlpha="0.75"
+        android:strokeWidth="1.2"
+        android:pathData="M44,39.5 L64,50.5 M64,39.5 L44,50.5" />
+
+    <!-- High-Impact Download Arrow with Shadow Halo -->
+    <path
+        android:fillColor="#250F172A"
+        android:pathData="M49,27 L59,27 L59,48 L68,48 L54,64 L40,48 L49,48 Z" />
+
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M50,25 L58,25 L58,46 L67,46 L54,62 L41,46 L50,46 Z" />
+
     <path
         android:fillColor="#0F172A"
-        android:pathData="M27,81h54c1.1,0 2,0.9 2,2v2.5c0,1.1 -0.9,2 -2,2h-54c-1.1,0 -2,-0.9 -2,-2v-2.5c0,-1.1 0.9,-2 2,-2z" />
+        android:pathData="M51.5,27 L56.5,27 L56.5,45 L64,45 L54,58 L44,45 L51.5,45 Z" />
+
+    <!-- Floating Modular Chunk in Motion (Top-Right) -->
+    <path
+        android:fillColor="#00E5FF"
+        android:pathData="M72,21 L81,25.5 L72,30 L63,25.5 Z" />
+    <path
+        android:fillColor="#0284C7"
+        android:pathData="M63,25.5 L72,30 L72,37 L63,32.5 Z" />
+    <path
+        android:fillColor="#0369A1"
+        android:pathData="M72,30 L81,25.5 L81,32.5 L72,37 Z" />
+
+    <!-- Kinetic Digital Velocity Dots -->
+    <path
+        android:fillColor="#38BDF8"
+        android:pathData="M78,16 A2,2 0 1,1 78,16.01 Z" />
+    <path
+        android:fillColor="#00E5FF"
+        android:pathData="M83,19 A1.5,1.5 0 1,1 83,19.01 Z" />
+    <path
+        android:fillColor="#0284C7"
+        android:pathData="M67,17 A1.5,1.5 0 1,1 67,17.01 Z" />
 </vector>

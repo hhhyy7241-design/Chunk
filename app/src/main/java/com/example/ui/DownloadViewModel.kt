@@ -209,4 +209,12 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
     fun setAutoClearOnStart(enabled: Boolean) {
         settingsManager.setAutoClearOnStart(enabled)
     }
+
+    fun setWifiOnly(enabled: Boolean) {
+        settingsManager.setWifiOnly(enabled)
+    }
+
+    fun setAutoRetry(enabled: Boolean) {
+        settingsManager.setAutoRetry(enabled)
+    }
 }

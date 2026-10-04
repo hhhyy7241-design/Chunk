@@ -51,10 +51,14 @@ import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.LightMode
+import androidx.compose.material.icons.filled.NotificationsOff
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SettingsBrightness
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.Vibration
+import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -248,8 +252,11 @@ fun MoodleDownloadScreen(
             settings = settings,
             onThemeChange = { viewModel.setThemeMode(it) },
             onDynamicColorChange = { viewModel.setDynamicColor(it) },
+            onWifiOnlyChange = { viewModel.setWifiOnly(it) },
+            onAutoRetryChange = { viewModel.setAutoRetry(it) },
             onVibrateChange = { viewModel.setVibrateOnComplete(it) },
             onAutoClearChange = { viewModel.setAutoClearOnStart(it) },
+            onClearHistory = { viewModel.clearAllHistory() },
             onDismiss = { showSettingsSheet = false }
         )
     }
@@ -261,156 +268,252 @@ fun SettingsBottomSheet(
     settings: AppSettings,
     onThemeChange: (ThemeMode) -> Unit,
     onDynamicColorChange: (Boolean) -> Unit,
+    onWifiOnlyChange: (Boolean) -> Unit,
+    onAutoRetryChange: (Boolean) -> Unit,
     onVibrateChange: (Boolean) -> Unit,
     onAutoClearChange: (Boolean) -> Unit,
+    onClearHistory: () -> Unit,
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val freeSpace = remember { getFreeDeviceSpace() }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
         shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
     ) {
-        Column(
+        LazyColumn(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 24.dp, vertical = 8.dp)
+                .padding(horizontal = 20.dp, vertical = 4.dp)
                 .padding(bottom = 32.dp),
-            verticalArrangement = Arrangement.spacedBy(20.dp)
+            verticalArrangement = Arrangement.spacedBy(18.dp)
         ) {
-            Text(
-                text = "Ajustes",
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold
-            )
-
-            // Selector de tema
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text(
-                    text = "Tema de la aplicación",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-
+            item {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    ThemeOptionButton(
-                        title = "Sistema",
-                        icon = Icons.Default.SettingsBrightness,
-                        isSelected = settings.themeMode == ThemeMode.SYSTEM,
-                        onClick = { onThemeChange(ThemeMode.SYSTEM) },
-                        modifier = Modifier.weight(1f)
+                    Text(
+                        text = "Ajustes y Preferencias",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold
                     )
-                    ThemeOptionButton(
-                        title = "Claro",
-                        icon = Icons.Default.LightMode,
-                        isSelected = settings.themeMode == ThemeMode.LIGHT,
-                        onClick = { onThemeChange(ThemeMode.LIGHT) },
-                        modifier = Modifier.weight(1f)
-                    )
-                    ThemeOptionButton(
-                        title = "Oscuro",
-                        icon = Icons.Default.DarkMode,
-                        isSelected = settings.themeMode == ThemeMode.DARK,
-                        onClick = { onThemeChange(ThemeMode.DARK) },
-                        modifier = Modifier.weight(1f)
-                    )
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Default.Clear, contentDescription = "Cerrar")
+                    }
                 }
             }
 
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-
-            // Ajustes Adicionales
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(
-                    text = "Preferencias",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                    SettingToggleRow(
-                        title = "Colores dinámicos",
-                        subtitle = "Adapta los colores al fondo de pantalla de tu dispositivo",
-                        icon = Icons.Default.ColorLens,
-                        checked = settings.dynamicColor,
-                        onCheckedChange = onDynamicColorChange
+            // Sección 1: Tema
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "Tema visual",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.Bold
                     )
-                }
 
-                SettingToggleRow(
-                    title = "Vibrar al terminar",
-                    subtitle = "Respuesta háptica al completar una descarga",
-                    icon = Icons.Default.Vibration,
-                    checked = settings.vibrateOnComplete,
-                    onCheckedChange = {
-                        onVibrateChange(it)
-                        if (it) triggerTestVibration(context)
-                    }
-                )
-
-                SettingToggleRow(
-                    title = "Limpiar campo al descargar",
-                    subtitle = "Limpia automáticamente el código tras iniciar",
-                    icon = Icons.Default.Clear,
-                    checked = settings.autoClearOnStart,
-                    onCheckedChange = onAutoClearChange
-                )
-            }
-
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-
-            // Directorio destino
-            OutlinedCard(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp)
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(14.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Carpeta de almacenamiento",
-                            fontWeight = FontWeight.SemiBold,
-                            fontSize = 14.sp
-                        )
-                        Text(
-                            text = "Download/Chunk",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.primary,
-                            fontFamily = FontFamily.Monospace
-                        )
-                    }
-                    OutlinedButton(
-                        onClick = { openDownloadsFolder(context) },
-                        shape = RoundedCornerShape(10.dp)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Icon(Icons.Default.Folder, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Ver")
+                        ThemeOptionButton(
+                            title = "Sistema",
+                            icon = Icons.Default.SettingsBrightness,
+                            isSelected = settings.themeMode == ThemeMode.SYSTEM,
+                            onClick = { onThemeChange(ThemeMode.SYSTEM) },
+                            modifier = Modifier.weight(1f)
+                        )
+                        ThemeOptionButton(
+                            title = "Claro",
+                            icon = Icons.Default.LightMode,
+                            isSelected = settings.themeMode == ThemeMode.LIGHT,
+                            onClick = { onThemeChange(ThemeMode.LIGHT) },
+                            modifier = Modifier.weight(1f)
+                        )
+                        ThemeOptionButton(
+                            title = "Oscuro",
+                            icon = Icons.Default.DarkMode,
+                            isSelected = settings.themeMode == ThemeMode.DARK,
+                            onClick = { onThemeChange(ThemeMode.DARK) },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        SettingToggleRow(
+                            title = "Colores dinámicos",
+                            subtitle = "Adaptar tonos al fondo de pantalla de tu teléfono",
+                            icon = Icons.Default.ColorLens,
+                            checked = settings.dynamicColor,
+                            onCheckedChange = onDynamicColorChange
+                        )
                     }
                 }
             }
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.Center
-            ) {
-                Text(
-                    text = "Download Chunk v1.0 • Build 2026",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.outline
-                )
+            // Sección 2: Segundo Plano y Descargas
+            item {
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                Spacer(modifier = Modifier.height(6.dp))
+                Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                    Text(
+                        text = "Descargas y Segundo Plano",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.Bold
+                    )
+
+                    SettingToggleRow(
+                        title = "Solo con Wi-Fi",
+                        subtitle = "Evitar consumo de datos móviles en descargas pesadas",
+                        icon = Icons.Default.Wifi,
+                        checked = settings.wifiOnly,
+                        onCheckedChange = onWifiOnlyChange
+                    )
+
+                    SettingToggleRow(
+                        title = "Reanudación automática",
+                        subtitle = "Reintentar si la red se corta y continuar desde la última parte",
+                        icon = Icons.Default.Refresh,
+                        checked = settings.autoRetry,
+                        onCheckedChange = onAutoRetryChange
+                    )
+                }
+            }
+
+            // Sección 3: Interfaz y Avisos
+            item {
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                Spacer(modifier = Modifier.height(6.dp))
+                Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                    Text(
+                        text = "Avisos y Comportamiento",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.Bold
+                    )
+
+                    SettingToggleRow(
+                        title = "Vibración al terminar",
+                        subtitle = "Aviso háptico cuando un archivo esté listo",
+                        icon = Icons.Default.Vibration,
+                        checked = settings.vibrateOnComplete,
+                        onCheckedChange = {
+                            onVibrateChange(it)
+                            if (it) triggerTestVibration(context)
+                        }
+                    )
+
+                    SettingToggleRow(
+                        title = "Limpiar campo al iniciar",
+                        subtitle = "Vaciar automáticamente el texto tras pulsar descargar",
+                        icon = Icons.Default.Clear,
+                        checked = settings.autoClearOnStart,
+                        onCheckedChange = onAutoClearChange
+                    )
+                }
+            }
+
+            // Sección 4: Almacenamiento
+            item {
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                Spacer(modifier = Modifier.height(6.dp))
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        text = "Almacenamiento",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.Bold
+                    )
+
+                    OutlinedCard(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(16.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(36.dp)
+                                        .background(MaterialTheme.colorScheme.secondaryContainer, CircleShape),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(Icons.Default.Storage, contentDescription = null, tint = MaterialTheme.colorScheme.secondary, modifier = Modifier.size(18.dp))
+                                }
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(text = "Espacio libre en dispositivo", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Text(text = freeSpace, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                                }
+                            }
+
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(text = "Carpeta pública", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Text(
+                                        text = "Download/Chunk",
+                                        fontWeight = FontWeight.SemiBold,
+                                        fontSize = 13.sp,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        fontFamily = FontFamily.Monospace
+                                    )
+                                }
+                                OutlinedButton(
+                                    onClick = { openDownloadsFolder(context) },
+                                    shape = RoundedCornerShape(10.dp)
+                                ) {
+                                    Icon(Icons.Default.Folder, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Ver")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    Text(
+                        text = "Download Chunk v1.0 • Edición 2026",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.outline
+                    )
+                }
             }
         }
+    }
+}
+
+private fun getFreeDeviceSpace(): String {
+    return try {
+        val stat = android.os.StatFs(Environment.getDataDirectory().path)
+        val bytes = stat.availableBlocksLong * stat.blockSizeLong
+        "${FileUtils.formatBytes(bytes)} libres"
+    } catch (_: Exception) {
+        "Espacio disponible"
     }
 }
 

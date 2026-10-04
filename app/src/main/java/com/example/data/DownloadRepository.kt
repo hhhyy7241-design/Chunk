@@ -1,7 +1,9 @@
 package com.example.data
 
 import android.content.Context
+import androidx.work.Constraints
 import androidx.work.ExistingWorkPolicy
+import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
@@ -18,6 +20,7 @@ class DownloadRepository(private val context: Context) {
     private val database = AppDatabase.getDatabase(context)
     private val downloadDao = database.downloadDao()
     private val workManager = WorkManager.getInstance(context)
+    private val settingsManager = SettingsManager(context)
 
     val allDownloads: Flow<List<DownloadEntity>> = downloadDao.getAllDownloads()
 
@@ -32,6 +35,13 @@ class DownloadRepository(private val context: Context) {
         val downloadId = UUID.randomUUID().toString()
         val finalFileName = customFileName?.ifBlank { null } ?: manifest.filename
         val codeFingerprint = MoodleCodeParser.getCodeFingerprint(code)
+        val currentSettings = settingsManager.settings.value
+
+        val constraints = Constraints.Builder()
+            .setRequiredNetworkType(
+                if (currentSettings.wifiOnly) NetworkType.UNMETERED else NetworkType.CONNECTED
+            )
+            .build()
 
         val workRequest = OneTimeWorkRequestBuilder<MoodleDownloadWorker>()
             .setInputData(
@@ -41,6 +51,7 @@ class DownloadRepository(private val context: Context) {
                     MoodleDownloadWorker.KEY_CUSTOM_FILENAME to finalFileName
                 )
             )
+            .setConstraints(constraints)
             .addTag("moodle_download")
             .addTag("id_$downloadId")
             .build()

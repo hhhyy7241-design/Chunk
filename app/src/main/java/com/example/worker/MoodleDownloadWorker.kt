@@ -526,17 +526,17 @@ class MoodleDownloadWorker(
             "$percent%$speedText • ${FileUtils.formatBytes(totalDownloaded)}/${FileUtils.formatBytes(manifestSize)}"
         }
 
-        setForegroundAsync(
-            createForegroundInfo(
-                statusText = notifContent,
-                percent = percent,
-                bytesDownloaded = totalDownloaded,
-                totalBytes = manifestSize,
-                partIndex = currentPartIndex,
-                totalParts = totalParts,
-                state = state
-            )
+        val foregroundInfo = createForegroundInfo(
+            statusText = notifContent,
+            percent = percent,
+            bytesDownloaded = totalDownloaded,
+            totalBytes = manifestSize,
+            partIndex = currentPartIndex,
+            totalParts = totalParts,
+            state = state
         )
+        setForegroundAsync(foregroundInfo)
+        notificationManager.notify(notificationId, foregroundInfo.notification)
     }
 
     private fun calculateCompletedPartsBytes(
@@ -628,11 +628,13 @@ class MoodleDownloadWorker(
         val cancelIntent = androidx.work.WorkManager.getInstance(applicationContext)
             .createCancelPendingIntent(id)
 
+
         val notification = NotificationCompat.Builder(applicationContext, CHANNEL_ID)
-            .setContentTitle("Descargas de Servidor")
+            .setContentTitle("Download Chunk")
             .setContentText(statusText)
             .setSmallIcon(android.R.drawable.stat_sys_download)
             .setOngoing(true)
+            .setOnlyAlertOnce(true)
             .setContentIntent(contentIntent)
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Cancelar", cancelIntent)
             .apply {
@@ -689,6 +691,24 @@ class MoodleDownloadWorker(
             .build()
 
         notificationManager.notify(notificationId, notification)
+
+        // Respuesta háptica opcional al completar con éxito
+        if (success) {
+            val prefs = applicationContext.getSharedPreferences("download_chunk_prefs", Context.MODE_PRIVATE)
+            val shouldVibrate = prefs.getBoolean("key_vibrate", true)
+            if (shouldVibrate) {
+                try {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        val vm = applicationContext.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? android.os.VibratorManager
+                        vm?.defaultVibrator?.vibrate(android.os.VibrationEffect.createOneShot(180, android.os.VibrationEffect.DEFAULT_AMPLITUDE))
+                    } else {
+                        @Suppress("DEPRECATION")
+                        val v = applicationContext.getSystemService(Context.VIBRATOR_SERVICE) as? android.os.Vibrator
+                        v?.vibrate(180)
+                    }
+                } catch (_: Exception) {}
+            }
+        }
     }
 
     private fun createNotificationChannel() {
@@ -698,7 +718,7 @@ class MoodleDownloadWorker(
                 CHANNEL_NAME,
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
-                description = "Notificaciones de descarga y reconstrucción de archivos de Moodle"
+                description = "Notificaciones de descarga y reconstrucción de Download Chunk"
                 setShowBadge(false)
             }
             notificationManager.createNotificationChannel(channel)
