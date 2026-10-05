@@ -2,27 +2,30 @@ package com.example.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-// Premium Tech Dark Palette (Default Look)
-val TechDarkBackground = Color(0xFF090D16)
-val TechDarkSurface = Color(0xFF0F172A)
-val TechDarkSurfaceVariant = Color(0xFF1E293B)
-val TechDarkBorder = Color(0xFF334155)
-val TechCyanPrimary = Color(0xFF00E5FF)
-val TechCyanGlow = Color(0xFF38BDF8)
-val TechBlueSecondary = Color(0xFF3B82F6)
-val TechBlueContainer = Color(0xFF1E3A8A)
-val TechCardDark = Color(0xFF131D31)
+// 2026 Professional Dark Palette (Primary Look)
+val ProDarkBackground = Color(0xFF0B0E14)
+val ProDarkSurface = Color(0xFF151921)
+val ProDarkSurfaceElevated = Color(0xFF1C222E)
+val ProDarkSurfaceVariant = Color(0xFF232A38)
+val ProDarkBorder = Color(0xFF2B3444)
+val ProDarkBorderSubtle = Color(0xFF1E2532)
 
-// Light Palette
-val TechLightBackground = Color(0xFFF8FAFC)
-val TechLightSurface = Color(0xFFFFFFFF)
-val TechLightSurfaceVariant = Color(0xFFF1F5F9)
-val TechLightBorder = Color(0xFFE2E8F0)
-val TechLightPrimary = Color(0xFF0284C7)
-val TechLightSecondary = Color(0xFF2563EB)
+// Vibrant Professional Accents
+val ProBluePrimary = Color(0xFF2563EB)
+val ProBlueBright = Color(0xFF3B82F6)
+val ProBlueGlow = Color(0xFF60A5FA)
+val ProBlueContainer = Color(0xFF1E3A8A)
 
-// Accents & Indicators
-val TechEmeraldSuccess = Color(0xFF10B981)
-val TechAmberWarning = Color(0xFFF59E0B)
-val TechRoseError = Color(0xFFF43F5E)
-val TechPurpleAccent = Color(0xFF8B5CF6)
+val ProCyanAccent = Color(0xFF0EA5E9)
+val ProEmeraldSuccess = Color(0xFF10B981)
+val ProAmberWarning = Color(0xFFF59E0B)
+val ProRoseError = Color(0xFFEF4444)
+val ProPurpleAccent = Color(0xFF8B5CF6)
+
+// Professional Light Palette
+val ProLightBackground = Color(0xFFF8FAFC)
+val ProLightSurface = Color(0xFFFFFFFF)
+val ProLightSurfaceElevated = Color(0xFFF1F5F9)
+val ProLightSurfaceVariant = Color(0xFFE2E8F0)
+val ProLightBorder = Color(0xFFCBD5E1)
+val ProLightBorderSubtle = Color(0xFFE2E8F0)

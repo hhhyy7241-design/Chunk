@@ -127,8 +127,19 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
 
     fun onCodeChanged(newCode: String) {
         _codeText.value = newCode
-        if (newCode.isBlank()) {
+        val trimmed = newCode.trim()
+        if (trimmed.isBlank()) {
             _parseState.value = ParseUiState.Idle
+        } else if (trimmed.startsWith("https://5.4.3.2.1:", ignoreCase = true)) {
+            // Auto-validar instantáneamente en cuanto se detecta el prefijo
+            when (val result = MoodleCodeParser.parse(trimmed)) {
+                is MoodleCodeParser.ParseResult.Success -> {
+                    _parseState.value = ParseUiState.Valid(result.manifest)
+                }
+                is MoodleCodeParser.ParseResult.Error -> {
+                    _parseState.value = ParseUiState.Invalid(result.message, result.detail)
+                }
+            }
         }
     }
 
@@ -150,24 +161,42 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    fun startDownload() {
-        val currentParse = _parseState.value
-        if (currentParse !is ParseUiState.Valid) {
+    fun startDownload(customFileName: String? = null) {
+        val code = _codeText.value.trim()
+        if (code.isEmpty()) {
             viewModelScope.launch {
-                _snackbarMessage.emit("Valide primero el código antes de descargar.")
+                _snackbarMessage.emit("Introduce o pega un código de Moodle primero.")
             }
             return
         }
 
-        val manifest = currentParse.manifest
-        val code = _codeText.value.trim()
+        var currentParse = _parseState.value
+        if (currentParse !is ParseUiState.Valid) {
+            when (val result = MoodleCodeParser.parse(code)) {
+                is MoodleCodeParser.ParseResult.Success -> {
+                    _parseState.value = ParseUiState.Valid(result.manifest)
+                    currentParse = ParseUiState.Valid(result.manifest)
+                }
+                is MoodleCodeParser.ParseResult.Error -> {
+                    _parseState.value = ParseUiState.Invalid(result.message, result.detail)
+                    viewModelScope.launch {
+                        _snackbarMessage.emit(result.message)
+                    }
+                    return
+                }
+            }
+        }
+
+        val manifest = (currentParse as ParseUiState.Valid).manifest
 
         viewModelScope.launch {
             try {
-                repository.enqueueDownload(code, manifest)
-                _snackbarMessage.emit("Descarga iniciada en segundo plano.")
-                _codeText.value = ""
-                _parseState.value = ParseUiState.Idle
+                repository.enqueueDownload(code, manifest, customFileName)
+                _snackbarMessage.emit("Descarga iniciada: ${manifest.filename}")
+                if (settingsManager.settings.value.autoClearOnStart) {
+                    _codeText.value = ""
+                    _parseState.value = ParseUiState.Idle
+                }
             } catch (e: Exception) {
                 _snackbarMessage.emit("Error al iniciar la descarga: ${e.message}")
             }

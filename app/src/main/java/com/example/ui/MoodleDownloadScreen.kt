@@ -1,14 +1,10 @@
 package com.example.ui
 
-import android.app.DownloadManager
-import android.content.ClipDescription
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
-import android.os.Environment
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
@@ -17,11 +13,6 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -54,7 +45,6 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.ColorLens
-import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.DeleteOutline
@@ -65,6 +55,7 @@ import androidx.compose.material.icons.filled.FolderZip
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SettingsBrightness
@@ -72,7 +63,6 @@ import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Vibration
 import androidx.compose.material.icons.filled.VideoFile
-import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -109,8 +99,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -121,19 +109,18 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.AppSettings
 import com.example.data.DownloadEntity
 import com.example.data.ThemeMode
 import com.example.model.DownloadState
 import com.example.model.MoodleManifest
-import com.example.parser.MoodleCodeParser
-import com.example.ui.theme.TechAmberWarning
-import com.example.ui.theme.TechCyanGlow
-import com.example.ui.theme.TechCyanPrimary
-import com.example.ui.theme.TechEmeraldSuccess
-import com.example.ui.theme.TechRoseError
+import com.example.ui.theme.ProAmberWarning
+import com.example.ui.theme.ProBlueBright
+import com.example.ui.theme.ProBluePrimary
+import com.example.ui.theme.ProCyanAccent
+import com.example.ui.theme.ProEmeraldSuccess
+import com.example.ui.theme.ProRoseError
 import com.example.util.FileUtils
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
@@ -157,30 +144,6 @@ fun MoodleDownloadScreen(
     var selectedTab by remember { mutableIntStateOf(0) }
     var showSettingsSheet by remember { mutableStateOf(false) }
 
-    // Estado del permiso de almacenamiento
-    var hasStoragePermission by remember {
-        mutableStateOf(
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                true // En Android 10+ Scoped Storage opera nativamente en Download/Chunk
-            } else {
-                ContextCompat.checkSelfPermission(
-                    context,
-                    android.Manifest.permission.WRITE_EXTERNAL_STORAGE
-                ) == PackageManager.PERMISSION_GRANTED
-            }
-        )
-    }
-
-    val permissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestMultiplePermissions()
-    ) { permissions ->
-        val granted = permissions.values.all { it }
-        hasStoragePermission = granted || Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
-        if (granted) {
-            scope.launch { snackbarHostState.showSnackbar("Permiso de almacenamiento concedido.") }
-        }
-    }
-
     val notificationLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { _ -> }
@@ -188,14 +151,6 @@ fun MoodleDownloadScreen(
     LaunchedEffect(Unit) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             notificationLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
-        }
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-            permissionLauncher.launch(
-                arrayOf(
-                    android.Manifest.permission.READ_EXTERNAL_STORAGE,
-                    android.Manifest.permission.WRITE_EXTERNAL_STORAGE
-                )
-            )
         }
     }
 
@@ -210,21 +165,6 @@ fun MoodleDownloadScreen(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
-                hasStoragePermission = hasStoragePermission,
-                onRequestStoragePermission = {
-                    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-                        permissionLauncher.launch(
-                            arrayOf(
-                                android.Manifest.permission.READ_EXTERNAL_STORAGE,
-                                android.Manifest.permission.WRITE_EXTERNAL_STORAGE
-                            )
-                        )
-                    } else {
-                        scope.launch {
-                            snackbarHostState.showSnackbar("Almacenamiento Scoped Storage activo: guardado directo en Download/Chunk.")
-                        }
-                    }
-                },
                 onOpenSettings = { showSettingsSheet = true }
             )
         }
@@ -234,7 +174,7 @@ fun MoodleDownloadScreen(
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
-            // Barra de Navegación Segmentada Rediseñada
+            // Navegación segmentada limpia de estilo profesional
             SegmentedModernNavigation(
                 selectedIndex = selectedTab,
                 activeCount = activeDownloads.size,
@@ -242,35 +182,21 @@ fun MoodleDownloadScreen(
                 onSelect = { selectedTab = it },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 10.dp)
+                    .padding(horizontal = 16.dp, vertical = 8.dp)
             )
 
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .widthIn(max = 680.dp)
+                    .widthIn(max = 640.dp)
                     .align(Alignment.CenterHorizontally)
             ) {
                 when (selectedTab) {
                     0 -> DownloadInputTab(
                         codeText = codeText,
                         parseState = parseState,
-                        hasStoragePermission = hasStoragePermission,
-                        onRequestStoragePermission = {
-                            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-                                permissionLauncher.launch(
-                                    arrayOf(
-                                        android.Manifest.permission.READ_EXTERNAL_STORAGE,
-                                        android.Manifest.permission.WRITE_EXTERNAL_STORAGE
-                                    )
-                                )
-                            } else {
-                                scope.launch {
-                                    snackbarHostState.showSnackbar("Permiso nativo Scoped Storage verificado.")
-                                }
-                            }
-                        },
                         onCodeChanged = { viewModel.onCodeChanged(it) },
+                        onValidate = { viewModel.validateCurrentCode() },
                         onStartDownload = {
                             viewModel.startDownload()
                             selectedTab = 1
@@ -294,7 +220,6 @@ fun MoodleDownloadScreen(
     if (showSettingsSheet) {
         SettingsBottomSheet(
             settings = settings,
-            hasStoragePermission = hasStoragePermission,
             onThemeChange = { viewModel.setThemeMode(it) },
             onDynamicColorChange = { viewModel.setDynamicColor(it) },
             onWifiOnlyChange = { viewModel.setWifiOnly(it) },
@@ -309,8 +234,6 @@ fun MoodleDownloadScreen(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun TopAppBar(
-    hasStoragePermission: Boolean,
-    onRequestStoragePermission: () -> Unit,
     onOpenSettings: () -> Unit
 ) {
     CenterAlignedTopAppBar(
@@ -319,16 +242,12 @@ private fun TopAppBar(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                // Emblema tecnológico moderno con degradado
+                // Emblema tecnológico moderno
                 Box(
                     modifier = Modifier
-                        .size(36.dp)
+                        .size(34.dp)
                         .clip(RoundedCornerShape(10.dp))
-                        .background(
-                            Brush.linearGradient(
-                                listOf(TechCyanPrimary, MaterialTheme.colorScheme.primary)
-                            )
-                        ),
+                        .background(ProBluePrimary),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
@@ -340,53 +259,29 @@ private fun TopAppBar(
                 }
 
                 Column {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            text = "Download Chunk",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 17.sp,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Box(
+                            modifier = Modifier
+                                .size(7.dp)
+                                .clip(CircleShape)
+                                .background(ProEmeraldSuccess)
+                        )
+                    }
                     Text(
-                        text = "Download Chunk",
-                        fontWeight = FontWeight.Black,
-                        fontSize = 19.sp,
-                        letterSpacing = (-0.5).sp,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                    Text(
-                        text = "Gestor Modular de Descargas",
+                        text = "Gestor Profesional de Descargas",
                         fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.primary,
-                        fontWeight = FontWeight.SemiBold
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
         },
         actions = {
-            // Indicador de almacenamiento interactivo
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(20.dp))
-                    .clickable { onRequestStoragePermission() }
-                    .background(
-                        if (hasStoragePermission) TechEmeraldSuccess.copy(alpha = 0.15f)
-                        else TechAmberWarning.copy(alpha = 0.15f)
-                    )
-                    .padding(horizontal = 8.dp, vertical = 4.dp)
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    Icon(
-                        imageVector = if (hasStoragePermission) Icons.Default.Security else Icons.Default.Warning,
-                        contentDescription = "Estado de Almacenamiento",
-                        tint = if (hasStoragePermission) TechEmeraldSuccess else TechAmberWarning,
-                        modifier = Modifier.size(14.dp)
-                    )
-                    Text(
-                        text = if (hasStoragePermission) "Almacenamiento OK" else "Permiso",
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = if (hasStoragePermission) TechEmeraldSuccess else TechAmberWarning
-                    )
-                }
-            }
-
             IconButton(
                 onClick = onOpenSettings,
                 modifier = Modifier.testTag("settings_button")
@@ -415,13 +310,8 @@ fun SegmentedModernNavigation(
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(18.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-            .border(
-                width = 1.dp,
-                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f),
-                shape = RoundedCornerShape(18.dp)
-            )
+            .clip(RoundedCornerShape(14.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f))
             .padding(4.dp),
         horizontalArrangement = Arrangement.spacedBy(4.dp)
     ) {
@@ -437,7 +327,7 @@ fun SegmentedModernNavigation(
             title = "En Curso",
             icon = Icons.Default.Layers,
             badge = if (activeCount > 0) activeCount.toString() else null,
-            badgeColor = TechCyanPrimary,
+            badgeColor = ProBlueBright,
             isSelected = selectedIndex == 1,
             onClick = { onSelect(1) },
             modifier = Modifier.weight(1f)
@@ -446,7 +336,7 @@ fun SegmentedModernNavigation(
             title = "Archivos",
             icon = Icons.Default.CheckCircle,
             badge = if (historyCount > 0) historyCount.toString() else null,
-            badgeColor = TechEmeraldSuccess,
+            badgeColor = ProEmeraldSuccess,
             isSelected = selectedIndex == 2,
             onClick = { onSelect(2) },
             modifier = Modifier.weight(1f)
@@ -459,25 +349,25 @@ private fun SegmentedTabItem(
     title: String,
     icon: ImageVector,
     badge: String?,
-    badgeColor: Color = TechCyanPrimary,
+    badgeColor: Color = ProBlueBright,
     isSelected: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val backgroundColor by animateColorAsState(
-        targetValue = if (isSelected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
-        animationSpec = tween(durationMillis = 200),
+        targetValue = if (isSelected) MaterialTheme.colorScheme.surface else Color.Transparent,
+        animationSpec = tween(durationMillis = 180),
         label = "tab_bg"
     )
     val contentColor by animateColorAsState(
-        targetValue = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
-        animationSpec = tween(durationMillis = 200),
+        targetValue = if (isSelected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+        animationSpec = tween(durationMillis = 180),
         label = "tab_content"
     )
 
     Box(
         modifier = modifier
-            .clip(RoundedCornerShape(14.dp))
+            .clip(RoundedCornerShape(10.dp))
             .background(backgroundColor)
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
@@ -494,7 +384,7 @@ private fun SegmentedTabItem(
             Icon(
                 imageVector = icon,
                 contentDescription = null,
-                tint = contentColor,
+                tint = if (isSelected) ProBlueBright else contentColor,
                 modifier = Modifier.size(16.dp)
             )
             Spacer(modifier = Modifier.width(6.dp))
@@ -511,13 +401,13 @@ private fun SegmentedTabItem(
                     modifier = Modifier
                         .clip(CircleShape)
                         .background(badgeColor)
-                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                        .padding(horizontal = 6.dp, vertical = 1.dp)
                 ) {
                     Text(
                         text = badge,
-                        color = Color.Black,
+                        color = Color.White,
                         fontSize = 10.sp,
-                        fontWeight = FontWeight.Black
+                        fontWeight = FontWeight.Bold
                     )
                 }
             }
@@ -529,109 +419,36 @@ private fun SegmentedTabItem(
 fun DownloadInputTab(
     codeText: String,
     parseState: ParseUiState,
-    hasStoragePermission: Boolean,
-    onRequestStoragePermission: () -> Unit,
     onCodeChanged: (String) -> Unit,
+    onValidate: () -> Unit,
     onStartDownload: () -> Unit
 ) {
     val context = LocalContext.current
+    val isValid = parseState is ParseUiState.Valid
+    val isInvalid = parseState is ParseUiState.Invalid
 
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = 20.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+            .padding(horizontal = 16.dp, vertical = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        // Explicación de almacenamiento nativo Scoped Storage
+        // Tarjeta Principal de Entrada
         item {
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(16.dp),
                 colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
-                ),
-                border = CardDefaults.outlinedCardBorder().copy(
-                    brush = Brush.horizontalGradient(
-                        listOf(
-                            TechCyanPrimary.copy(alpha = 0.3f),
-                            MaterialTheme.colorScheme.primary.copy(alpha = 0.1f)
-                        )
-                    )
-                )
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(14.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(38.dp)
-                            .clip(CircleShape)
-                            .background(TechCyanPrimary.copy(alpha = 0.15f)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Security,
-                            contentDescription = null,
-                            tint = TechCyanPrimary,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Almacenamiento Nativo Scoped Storage",
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Text(
-                            text = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                                "En Android 10+, las descargas se guardan directamente en tu carpeta pública sin solicitar permisos invasivos del sistema."
-                            } else {
-                                "Requiere acceso de almacenamiento para escribir archivos en tu memoria."
-                            },
-                            fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-
-                    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q && !hasStoragePermission) {
-                        OutlinedButton(
-                            onClick = onRequestStoragePermission,
-                            shape = RoundedCornerShape(10.dp)
-                        ) {
-                            Text("Permitir", fontSize = 12.sp)
-                        }
-                    }
-                }
-            }
-        }
-
-        // Tarjeta de Entrada de Código
-        item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(
                     containerColor = MaterialTheme.colorScheme.surface
                 ),
                 border = CardDefaults.outlinedCardBorder().copy(
-                    brush = Brush.verticalGradient(
-                        listOf(
-                            TechCyanPrimary.copy(alpha = 0.4f),
-                            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.2f)
-                        )
-                    )
+                    brush = androidx.compose.ui.graphics.SolidColor(MaterialTheme.colorScheme.outline)
                 )
             ) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(18.dp),
+                        .padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     Row(
@@ -640,7 +457,7 @@ fun DownloadInputTab(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "Código de Descarga Moodle",
+                            text = "Código de Descarga",
                             fontWeight = FontWeight.Bold,
                             fontSize = 15.sp,
                             color = MaterialTheme.colorScheme.onSurface
@@ -657,19 +474,19 @@ fun DownloadInputTab(
                                         if (text.isNotBlank()) {
                                             onCodeChanged(text)
                                         } else {
-                                            Toast.makeText(context, "Portapapeles vacío", Toast.LENGTH_SHORT).show()
+                                            Toast.makeText(context, "El portapapeles está vacío", Toast.LENGTH_SHORT).show()
                                         }
                                     }
                                 },
-                                shape = RoundedCornerShape(10.dp),
+                                shape = RoundedCornerShape(8.dp),
                                 colors = ButtonDefaults.buttonColors(
-                                    containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                                    containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                                    contentColor = MaterialTheme.colorScheme.onSurface
                                 )
                             ) {
-                                Icon(Icons.Default.ContentPaste, contentDescription = null, modifier = Modifier.size(15.dp))
+                                Icon(Icons.Default.ContentPaste, contentDescription = null, modifier = Modifier.size(14.dp))
                                 Spacer(modifier = Modifier.width(4.dp))
-                                Text("Pegar", fontSize = 12.sp)
+                                Text("Pegar", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                             }
 
                             if (codeText.isNotEmpty()) {
@@ -701,22 +518,64 @@ fun DownloadInputTab(
                             fontFamily = FontFamily.Monospace,
                             fontSize = 12.sp
                         ),
-                        shape = RoundedCornerShape(14.dp),
+                        shape = RoundedCornerShape(12.dp),
                         colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = TechCyanPrimary,
-                            unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
-                            focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f),
-                            unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.15f)
+                            focusedBorderColor = ProBlueBright,
+                            unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
+                            focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+                            unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.2f)
                         )
                     )
+
+                    // Barra de Acciones Inmediata (SIEMPRE VISIBLE)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = onValidate,
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(10.dp),
+                            enabled = codeText.isNotBlank()
+                        ) {
+                            Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Comprobar", fontSize = 13.sp)
+                        }
+
+                        Button(
+                            onClick = onStartDownload,
+                            modifier = Modifier
+                                .weight(1.4f)
+                                .testTag("start_download_button"),
+                            shape = RoundedCornerShape(10.dp),
+                            enabled = codeText.isNotBlank(),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (isValid) ProBluePrimary else MaterialTheme.colorScheme.primary
+                            )
+                        ) {
+                            Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = if (isValid) {
+                                    val size = (parseState as ParseUiState.Valid).manifest.size
+                                    "Descargar (${FileUtils.formatBytes(size)})"
+                                } else {
+                                    "Descargar Ahora"
+                                },
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp
+                            )
+                        }
+                    }
                 }
             }
         }
 
-        // Vista previa en tiempo real
+        // Inspección y Vista Previa del Archivo
         item {
             AnimatedVisibility(
-                visible = parseState is ParseUiState.Valid,
+                visible = isValid,
                 enter = fadeIn() + slideInVertically()
             ) {
                 if (parseState is ParseUiState.Valid) {
@@ -729,18 +588,18 @@ fun DownloadInputTab(
             }
 
             AnimatedVisibility(
-                visible = parseState is ParseUiState.Invalid && codeText.isNotBlank(),
+                visible = isInvalid && codeText.isNotBlank(),
                 enter = fadeIn()
             ) {
                 if (parseState is ParseUiState.Invalid) {
                     Card(
                         modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(16.dp),
+                        shape = RoundedCornerShape(14.dp),
                         colors = CardDefaults.cardColors(
-                            containerColor = TechRoseError.copy(alpha = 0.12f)
+                            containerColor = ProRoseError.copy(alpha = 0.1f)
                         ),
                         border = CardDefaults.outlinedCardBorder().copy(
-                            brush = Brush.horizontalGradient(listOf(TechRoseError.copy(alpha = 0.5f), TechRoseError.copy(alpha = 0.2f)))
+                            brush = androidx.compose.ui.graphics.SolidColor(ProRoseError.copy(alpha = 0.4f))
                         )
                     ) {
                         Row(
@@ -748,15 +607,15 @@ fun DownloadInputTab(
                                 .fillMaxWidth()
                                 .padding(14.dp),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
-                            Icon(Icons.Default.ErrorOutline, contentDescription = null, tint = TechRoseError)
+                            Icon(Icons.Default.ErrorOutline, contentDescription = null, tint = ProRoseError)
                             Column {
                                 Text(
-                                    text = "Código No Válido",
+                                    text = "Formato de código inválido",
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 13.sp,
-                                    color = TechRoseError
+                                    color = ProRoseError
                                 )
                                 Text(
                                     text = parseState.message,
@@ -782,24 +641,19 @@ fun ManifestLiveCard(
 
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(22.dp),
+        shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surface
         ),
         border = CardDefaults.outlinedCardBorder().copy(
-            brush = Brush.verticalGradient(
-                listOf(
-                    TechCyanPrimary.copy(alpha = 0.6f),
-                    TechEmeraldSuccess.copy(alpha = 0.3f)
-                )
-            )
+            brush = androidx.compose.ui.graphics.SolidColor(ProBlueBright.copy(alpha = 0.4f))
         )
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(18.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -809,17 +663,17 @@ fun ManifestLiveCard(
                 Box(
                     modifier = Modifier
                         .size(46.dp)
-                        .clip(RoundedCornerShape(14.dp))
+                        .clip(RoundedCornerShape(12.dp))
                         .background(
-                            if (isApk) TechEmeraldSuccess.copy(alpha = 0.2f)
-                            else TechCyanPrimary.copy(alpha = 0.2f)
+                            if (isApk) ProEmeraldSuccess.copy(alpha = 0.15f)
+                            else ProBluePrimary.copy(alpha = 0.15f)
                         ),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
                         imageVector = fileIcon,
                         contentDescription = null,
-                        tint = if (isApk) TechEmeraldSuccess else TechCyanPrimary,
+                        tint = if (isApk) ProEmeraldSuccess else ProBlueBright,
                         modifier = Modifier.size(24.dp)
                     )
                 }
@@ -828,20 +682,20 @@ fun ManifestLiveCard(
                     Text(
                         text = manifest.filename,
                         fontWeight = FontWeight.Bold,
-                        fontSize = 16.sp,
+                        fontSize = 15.sp,
                         color = MaterialTheme.colorScheme.onSurface,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis
                     )
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         Text(
                             text = FileUtils.formatBytes(manifest.size),
                             fontSize = 13.sp,
                             fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.primary
+                            color = ProBlueBright
                         )
                         Text(text = "•", color = MaterialTheme.colorScheme.outline)
                         Text(
@@ -853,13 +707,13 @@ fun ManifestLiveCard(
                 }
             }
 
-            // Datos de verificación del manifiesto
+            // Datos técnicos de seguridad
             if (!manifest.sha256.isNullOrBlank()) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
                         .padding(horizontal = 10.dp, vertical = 6.dp)
                 ) {
                     Row(
@@ -868,7 +722,7 @@ fun ManifestLiveCard(
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text(
-                            text = "SHA-256: ${manifest.sha256.take(12)}...${manifest.sha256.takeLast(8)}",
+                            text = "SHA-256: ${manifest.sha256.take(10)}...${manifest.sha256.takeLast(8)}",
                             fontSize = 11.sp,
                             fontFamily = FontFamily.Monospace,
                             color = MaterialTheme.colorScheme.outline
@@ -876,33 +730,11 @@ fun ManifestLiveCard(
                         Icon(
                             imageVector = Icons.Default.Security,
                             contentDescription = null,
-                            tint = TechEmeraldSuccess,
+                            tint = ProEmeraldSuccess,
                             modifier = Modifier.size(14.dp)
                         )
                     }
                 }
-            }
-
-            // Botón de Inicio con Estilo Futurista
-            Button(
-                onClick = onStart,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(52.dp)
-                    .testTag("start_download_button"),
-                shape = RoundedCornerShape(14.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = TechCyanPrimary,
-                    contentColor = Color.Black
-                )
-            ) {
-                Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(20.dp))
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = "Iniciar Descarga Modular",
-                    fontWeight = FontWeight.Black,
-                    fontSize = 15.sp
-                )
             }
         }
     }
@@ -927,7 +759,7 @@ fun ActiveTasksTab(
             ) {
                 Box(
                     modifier = Modifier
-                        .size(80.dp)
+                        .size(72.dp)
                         .clip(CircleShape)
                         .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
                     contentAlignment = Alignment.Center
@@ -936,25 +768,25 @@ fun ActiveTasksTab(
                         imageVector = Icons.Default.Layers,
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.outline,
-                        modifier = Modifier.size(40.dp)
+                        modifier = Modifier.size(36.dp)
                     )
                 }
 
                 Text(
                     text = "No hay descargas activas",
                     fontWeight = FontWeight.Bold,
-                    fontSize = 18.sp,
+                    fontSize = 17.sp,
                     color = MaterialTheme.colorScheme.onSurface
                 )
                 Text(
-                    text = "Pega un código de Moodle en la pestaña Descargar para comenzar.",
+                    text = "Pega un código de descarga en la pestaña principal para comenzar.",
                     fontSize = 13.sp,
                     color = MaterialTheme.colorScheme.outline,
                     textAlign = TextAlign.Center
                 )
                 Button(
                     onClick = onGoToNew,
-                    shape = RoundedCornerShape(12.dp)
+                    shape = RoundedCornerShape(10.dp)
                 ) {
                     Text("Nueva Descarga")
                 }
@@ -965,7 +797,7 @@ fun ActiveTasksTab(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(horizontal = 16.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             items(activeDownloads, key = { it.id }) { task ->
                 ActiveTaskCard(task = task, onCancel = { onCancel(task.id) })
@@ -983,17 +815,12 @@ fun ActiveTaskCard(
 
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
+        shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surface
         ),
         border = CardDefaults.outlinedCardBorder().copy(
-            brush = Brush.horizontalGradient(
-                listOf(
-                    TechCyanPrimary.copy(alpha = 0.7f),
-                    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)
-                )
-            )
+            brush = androidx.compose.ui.graphics.SolidColor(ProBlueBright.copy(alpha = 0.35f))
         )
     ) {
         Column(
@@ -1010,14 +837,14 @@ fun ActiveTaskCard(
                 Box(
                     modifier = Modifier
                         .size(40.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(TechCyanPrimary.copy(alpha = 0.18f)),
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(ProBluePrimary.copy(alpha = 0.15f)),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
                         imageVector = fileIcon,
                         contentDescription = null,
-                        tint = TechCyanPrimary,
+                        tint = ProBlueBright,
                         modifier = Modifier.size(22.dp)
                     )
                 }
@@ -1037,36 +864,36 @@ fun ActiveTaskCard(
                     )
                 }
 
-                // Velocidad en tiempo real
+                // Velocímetro en vivo
                 if (task.speedBps > 0) {
                     Box(
                         modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(TechCyanPrimary.copy(alpha = 0.15f))
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(ProBluePrimary.copy(alpha = 0.15f))
                             .padding(horizontal = 8.dp, vertical = 4.dp)
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Icon(Icons.Default.Speed, contentDescription = null, tint = TechCyanPrimary, modifier = Modifier.size(12.dp))
+                            Icon(Icons.Default.Speed, contentDescription = null, tint = ProBlueBright, modifier = Modifier.size(12.dp))
                             Text(
                                 text = "${FileUtils.formatBytes(task.speedBps)}/s",
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = TechCyanPrimary
+                                color = ProBlueBright
                             )
                         }
                     }
                 }
             }
 
-            // Barra de progreso y porcentaje
+            // Barra de progreso y estado cuantitativo
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 LinearProgressIndicator(
                     progress = { task.percent / 100f },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(8.dp)
+                        .height(7.dp)
                         .clip(RoundedCornerShape(4.dp)),
-                    color = TechCyanPrimary,
+                    color = ProBlueBright,
                     trackColor = MaterialTheme.colorScheme.surfaceVariant
                 )
 
@@ -1075,7 +902,7 @@ fun ActiveTaskCard(
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Text(
-                        text = "${task.percent}% • ${FileUtils.formatBytes(task.downloadedBytes)} / ${FileUtils.formatBytes(task.totalBytes)}",
+                        text = "${task.percent}% • ${FileUtils.formatBytes(task.downloadedBytes)} de ${FileUtils.formatBytes(task.totalBytes)}",
                         fontSize = 11.sp,
                         color = MaterialTheme.colorScheme.outline
                     )
@@ -1090,16 +917,42 @@ fun ActiveTaskCard(
                 }
             }
 
-            // Acción de Cancelar
+            // Desglose visual de bloques de partes (Estilo IDM / 1DM+)
+            if (task.totalParts > 1) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    for (i in 1..task.totalParts.coerceAtMost(16)) {
+                        val isDone = i < task.currentPartIndex
+                        val isCurrent = i == task.currentPartIndex
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(4.dp)
+                                .clip(RoundedCornerShape(2.dp))
+                                .background(
+                                    when {
+                                        isDone -> ProEmeraldSuccess
+                                        isCurrent -> ProBlueBright
+                                        else -> MaterialTheme.colorScheme.surfaceVariant
+                                    }
+                                )
+                        )
+                    }
+                }
+            }
+
+            // Cancelar
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.End
             ) {
                 OutlinedButton(
                     onClick = onCancel,
-                    shape = RoundedCornerShape(10.dp),
+                    shape = RoundedCornerShape(8.dp),
                     colors = ButtonDefaults.outlinedButtonColors(
-                        contentColor = TechRoseError
+                        contentColor = ProRoseError
                     )
                 ) {
                     Icon(Icons.Default.Clear, contentDescription = null, modifier = Modifier.size(14.dp))
@@ -1134,10 +987,10 @@ fun CompletedFilesTab(
                     imageVector = Icons.Default.Folder,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.outline,
-                    modifier = Modifier.size(56.dp)
+                    modifier = Modifier.size(54.dp)
                 )
                 Text(
-                    text = "No hay archivos en el historial",
+                    text = "No hay archivos descargados",
                     fontWeight = FontWeight.Bold,
                     fontSize = 17.sp,
                     color = MaterialTheme.colorScheme.onSurface
@@ -1164,14 +1017,14 @@ fun CompletedFilesTab(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "Archivos Guardados (${downloads.size})",
+                        text = "Archivos Descargados (${downloads.size})",
                         fontWeight = FontWeight.Bold,
                         fontSize = 15.sp,
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     OutlinedButton(
                         onClick = onClearAll,
-                        shape = RoundedCornerShape(10.dp)
+                        shape = RoundedCornerShape(8.dp)
                     ) {
                         Icon(Icons.Default.DeleteOutline, contentDescription = null, modifier = Modifier.size(14.dp))
                         Spacer(modifier = Modifier.width(4.dp))
@@ -1235,18 +1088,15 @@ fun CompletedFileCard(
 
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
+        shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surface
         ),
         border = CardDefaults.outlinedCardBorder().copy(
-            brush = Brush.horizontalGradient(
-                listOf(
-                    if (isSuccess) TechEmeraldSuccess.copy(alpha = 0.5f)
-                    else if (isWarning) TechAmberWarning.copy(alpha = 0.5f)
-                    else TechRoseError.copy(alpha = 0.5f),
-                    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.2f)
-                )
+            brush = androidx.compose.ui.graphics.SolidColor(
+                if (isSuccess) ProEmeraldSuccess.copy(alpha = 0.35f)
+                else if (isWarning) ProAmberWarning.copy(alpha = 0.35f)
+                else ProRoseError.copy(alpha = 0.35f)
             )
         )
     ) {
@@ -1263,20 +1113,20 @@ fun CompletedFileCard(
             ) {
                 Box(
                     modifier = Modifier
-                        .size(44.dp)
-                        .clip(RoundedCornerShape(12.dp))
+                        .size(42.dp)
+                        .clip(RoundedCornerShape(10.dp))
                         .background(
-                            if (isSuccess) TechEmeraldSuccess.copy(alpha = 0.15f)
-                            else if (isWarning) TechAmberWarning.copy(alpha = 0.15f)
-                            else TechRoseError.copy(alpha = 0.15f)
+                            if (isSuccess) ProEmeraldSuccess.copy(alpha = 0.15f)
+                            else if (isWarning) ProAmberWarning.copy(alpha = 0.15f)
+                            else ProRoseError.copy(alpha = 0.15f)
                         ),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
                         imageVector = fileIcon,
                         contentDescription = null,
-                        tint = if (isSuccess) TechEmeraldSuccess else if (isWarning) TechAmberWarning else TechRoseError,
-                        modifier = Modifier.size(24.dp)
+                        tint = if (isSuccess) ProEmeraldSuccess else if (isWarning) ProAmberWarning else ProRoseError,
+                        modifier = Modifier.size(22.dp)
                     )
                 }
 
@@ -1292,7 +1142,7 @@ fun CompletedFileCard(
                         Text(
                             text = FileUtils.formatBytes(item.totalBytes),
                             fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.primary,
+                            color = ProBlueBright,
                             fontWeight = FontWeight.SemiBold
                         )
                         Text(text = "•", color = MaterialTheme.colorScheme.outline)
@@ -1300,7 +1150,7 @@ fun CompletedFileCard(
                             text = if (isSuccess) "Completado" else if (isWarning) "Guardado (aviso de hash)" else "Fallo",
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold,
-                            color = if (isSuccess) TechEmeraldSuccess else if (isWarning) TechAmberWarning else TechRoseError
+                            color = if (isSuccess) ProEmeraldSuccess else if (isWarning) ProAmberWarning else ProRoseError
                         )
                     }
                 }
@@ -1310,7 +1160,7 @@ fun CompletedFileCard(
                 }
             }
 
-            // Barra de acciones
+            // Acciones directas
             if (isSuccess || isWarning) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -1318,21 +1168,21 @@ fun CompletedFileCard(
                 ) {
                     Button(
                         onClick = onOpen,
-                        shape = RoundedCornerShape(10.dp),
+                        shape = RoundedCornerShape(8.dp),
                         modifier = Modifier.weight(1f),
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = if (isApk) TechEmeraldSuccess else MaterialTheme.colorScheme.primary,
+                            containerColor = if (isApk) ProEmeraldSuccess else ProBluePrimary,
                             contentColor = Color.White
                         )
                     ) {
                         Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text(if (isApk) "Instalar / Abrir" else "Abrir", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        Text(if (isApk) "Instalar APK" else "Abrir Archivo", fontSize = 13.sp, fontWeight = FontWeight.Bold)
                     }
 
                     OutlinedButton(
                         onClick = onShare,
-                        shape = RoundedCornerShape(10.dp)
+                        shape = RoundedCornerShape(8.dp)
                     ) {
                         Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(15.dp))
                     }
@@ -1341,7 +1191,7 @@ fun CompletedFileCard(
                 Text(
                     text = item.errorMessage,
                     fontSize = 12.sp,
-                    color = TechRoseError
+                    color = ProRoseError
                 )
             }
         }
@@ -1352,7 +1202,6 @@ fun CompletedFileCard(
 @Composable
 fun SettingsBottomSheet(
     settings: AppSettings,
-    hasStoragePermission: Boolean,
     onThemeChange: (ThemeMode) -> Unit,
     onDynamicColorChange: (Boolean) -> Unit,
     onWifiOnlyChange: (Boolean) -> Unit,
@@ -1367,7 +1216,7 @@ fun SettingsBottomSheet(
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
-        shape = RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp),
+        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
         containerColor = MaterialTheme.colorScheme.surface
     ) {
         LazyColumn(
@@ -1386,7 +1235,7 @@ fun SettingsBottomSheet(
                     Text(
                         text = "Ajustes de la Aplicación",
                         style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Black
+                        fontWeight = FontWeight.Bold
                     )
                     IconButton(onClick = onDismiss) {
                         Icon(Icons.Default.Clear, contentDescription = "Cerrar")
@@ -1400,7 +1249,7 @@ fun SettingsBottomSheet(
                     Text(
                         text = "Tema visual",
                         style = MaterialTheme.typography.labelLarge,
-                        color = TechCyanPrimary,
+                        color = ProBlueBright,
                         fontWeight = FontWeight.Bold
                     )
 
@@ -1452,13 +1301,13 @@ fun SettingsBottomSheet(
                     Text(
                         text = "Red y Descargas",
                         style = MaterialTheme.typography.labelLarge,
-                        color = TechCyanPrimary,
+                        color = ProBlueBright,
                         fontWeight = FontWeight.Bold
                     )
 
                     SettingToggleRow(
                         title = "Solo con Wi-Fi",
-                        subtitle = "Ahorrar datos móviles; descargar solo cuando estés en Wi-Fi",
+                        subtitle = "Ahorrar datos móviles; descargar solo en Wi-Fi",
                         icon = Icons.Default.Wifi,
                         checked = settings.wifiOnly,
                         onCheckedChange = onWifiOnlyChange
@@ -1482,7 +1331,7 @@ fun SettingsBottomSheet(
                     Text(
                         text = "Avisos y Comportamiento",
                         style = MaterialTheme.typography.labelLarge,
-                        color = TechCyanPrimary,
+                        color = ProBlueBright,
                         fontWeight = FontWeight.Bold
                     )
 
@@ -1531,12 +1380,12 @@ fun ThemeOptionButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val bg = if (isSelected) TechCyanPrimary else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
-    val fg = if (isSelected) Color.Black else MaterialTheme.colorScheme.onSurface
+    val bg = if (isSelected) ProBluePrimary else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+    val fg = if (isSelected) Color.White else MaterialTheme.colorScheme.onSurface
 
     Box(
         modifier = modifier
-            .clip(RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(10.dp))
             .background(bg)
             .clickable(onClick = onClick)
             .padding(vertical = 12.dp),
@@ -1546,7 +1395,7 @@ fun ThemeOptionButton(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
-            Icon(imageVector = icon, contentDescription = null, tint = fg, modifier = Modifier.size(20.dp))
+            Icon(imageVector = icon, contentDescription = null, tint = fg, modifier = Modifier.size(18.dp))
             Text(text = title, fontSize = 12.sp, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium, color = fg)
         }
     }
@@ -1567,12 +1416,12 @@ fun SettingToggleRow(
     ) {
         Box(
             modifier = Modifier
-                .size(38.dp)
+                .size(36.dp)
                 .clip(CircleShape)
-                .background(TechCyanPrimary.copy(alpha = 0.15f)),
+                .background(ProBluePrimary.copy(alpha = 0.12f)),
             contentAlignment = Alignment.Center
         ) {
-            Icon(imageVector = icon, contentDescription = null, tint = TechCyanPrimary, modifier = Modifier.size(20.dp))
+            Icon(imageVector = icon, contentDescription = null, tint = ProBlueBright, modifier = Modifier.size(18.dp))
         }
 
         Column(modifier = Modifier.weight(1f)) {
@@ -1584,8 +1433,8 @@ fun SettingToggleRow(
             checked = checked,
             onCheckedChange = onCheckedChange,
             colors = SwitchDefaults.colors(
-                checkedThumbColor = TechCyanPrimary,
-                checkedTrackColor = TechCyanPrimary.copy(alpha = 0.3f)
+                checkedThumbColor = ProBlueBright,
+                checkedTrackColor = ProBluePrimary.copy(alpha = 0.4f)
             )
         )
     }

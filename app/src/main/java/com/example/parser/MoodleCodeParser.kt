@@ -89,11 +89,19 @@ object MoodleCodeParser {
     }
 
     fun decodeBase64Safe(input: String): ByteArray {
-        val clean = padBase64(input)
+        val clean = padBase64(input.replace("\\s".toRegex(), ""))
         return try {
             android.util.Base64.decode(clean, android.util.Base64.URL_SAFE or android.util.Base64.NO_WRAP)
         } catch (_: Throwable) {
-            java.util.Base64.getUrlDecoder().decode(clean)
+            try {
+                android.util.Base64.decode(clean, android.util.Base64.DEFAULT or android.util.Base64.NO_WRAP)
+            } catch (_: Throwable) {
+                try {
+                    java.util.Base64.getUrlDecoder().decode(clean)
+                } catch (_: Throwable) {
+                    java.util.Base64.getDecoder().decode(clean)
+                }
+            }
         }
     }
 
