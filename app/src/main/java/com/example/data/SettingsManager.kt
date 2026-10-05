@@ -66,7 +66,7 @@ class SettingsManager(context: Context) {
         val dynamic = prefs.getBoolean(KEY_DYNAMIC_COLOR, false)
         val wifi = prefs.getBoolean(KEY_WIFI_ONLY, false)
         val retry = prefs.getBoolean(KEY_AUTO_RETRY, true)
-        val maxRet = prefs.getInt(KEY_MAX_RETRIES, 3)
+        val maxRet = prefs.getInt(KEY_MAX_RETRIES, 3).coerceIn(1, 5)
         val maxConc = prefs.getInt(KEY_MAX_CONCURRENT, 2).coerceIn(1, 4)
         val maxParts = prefs.getInt(KEY_MAX_PARTS, 2).coerceIn(1, 4)
 
@@ -136,8 +136,9 @@ class SettingsManager(context: Context) {
     }
 
     fun setMaxRetries(retries: Int) {
-        prefs.edit().putInt(KEY_MAX_RETRIES, retries).apply()
-        _settings.value = _settings.value.copy(maxRetries = retries)
+        val safe = retries.coerceIn(1, 5)
+        prefs.edit().putInt(KEY_MAX_RETRIES, safe).apply()
+        _settings.value = _settings.value.copy(maxRetries = safe)
     }
 
     fun setMaxConcurrentDownloads(limit: Int) {

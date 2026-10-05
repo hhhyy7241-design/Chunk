@@ -30,7 +30,7 @@ interface DownloadDao {
     @Query("SELECT * FROM downloads WHERE id = :id")
     suspend fun getDownloadById(id: String): DownloadEntity?
 
-    @Query("SELECT * FROM downloads WHERE status IN ('DOWNLOADING', 'PAUSING', 'QUEUED')")
+    @Query("SELECT * FROM downloads WHERE status IN ('QUEUED', 'DOWNLOADING', 'PAUSING', 'PAUSED', 'ERROR')")
     suspend fun getUnfinishedDownloads(): List<DownloadEntity>
 
     @Query("SELECT * FROM downloads WHERE status = 'DOWNLOADING'")

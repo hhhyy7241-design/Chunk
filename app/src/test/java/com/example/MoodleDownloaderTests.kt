@@ -413,4 +413,34 @@ class MoodleDownloaderTests {
         assertTrue(idsToDelete.contains("id-completed-2"))
         assertTrue(idsToDelete.contains("id-completed-3"))
     }
+
+    @Test
+    fun test16_rejectInvalidSha256Format() {
+        val parts = listOf(ChunkPart(1, "https://moodle.test/file1"))
+        val code = MoodleCodeParser.createMoodleCode(
+            filename = "test.bin",
+            size = 10L,
+            parts = parts,
+            sha256 = "not-a-sha"
+        )
+        // createMoodleCode itself permits constructing a malformed manifest;
+        // parser must reject it at validation time.
+        val result = MoodleCodeParser.parse(code)
+        assertTrue(result is MoodleCodeParser.ParseResult.Error)
+        assertTrue((result as MoodleCodeParser.ParseResult.Error).message.contains("SHA-256"))
+    }
+
+    @Test
+    fun test17_rejectZeroBasedPartIndex() {
+        val parts = listOf(ChunkPart(0, "https://moodle.test/file1"))
+        val code = MoodleCodeParser.createMoodleCode(
+            filename = "test.bin",
+            size = 10L,
+            parts = parts
+        )
+        val result = MoodleCodeParser.parse(code)
+        assertTrue(result is MoodleCodeParser.ParseResult.Error)
+        assertTrue((result as MoodleCodeParser.ParseResult.Error).message.contains("comenzar en 1"))
+    }
+
 }

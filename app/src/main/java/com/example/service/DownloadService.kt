@@ -47,6 +47,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
@@ -68,6 +69,8 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
 class DownloadService : Service() {
+
+    private class PermanentDownloadException(message: String) : IOException(message)
 
     companion object {
         const val TAG = "DownloadChunk"
@@ -135,6 +138,7 @@ class DownloadService : Service() {
     private val activeJobs = ConcurrentHashMap<String, Job>()
     private val activeCalls = ConcurrentHashMap<String, MutableSet<Call>>()
     private val pausingFlags = ConcurrentHashMap<String, AtomicBoolean>()
+    private val retryAttempts = ConcurrentHashMap<String, AtomicInteger>()
 
     // Rate limiter para notificaciones (máximo 2 por segundo = 500ms entre actualizaciones)
     private var lastNotificationUpdateTime = 0L
@@ -252,8 +256,9 @@ class DownloadService : Service() {
             activeCalls[downloadId]?.forEach { try { it.cancel() } catch (_: Exception) {} }
 
             // 3. Esperar que el trabajo activo termine ordenadamente de guardar en disco
-            val job = activeJobs.remove(downloadId)
-            job?.cancel()
+            val job = activeJobs[downloadId]
+            job?.cancelAndJoin()
+            activeJobs.remove(downloadId)
 
             // 4. Pasar a "Pausada" guardando los bytes descargados
             database.downloadDao().updateStatus(downloadId, DownloadState.PAUSED.name, null, pausedByNetwork = false)
@@ -280,6 +285,7 @@ class DownloadService : Service() {
             }
 
             Log.d(TAG, "Resuming download: $downloadId")
+            retryAttempts.remove(downloadId)
             // Mover a cola para que el procesador respete el límite de simultaneidad
             database.downloadDao().updateStatus(downloadId, DownloadState.QUEUED.name, null, pausedByNetwork = false)
             processQueue()
@@ -290,6 +296,7 @@ class DownloadService : Service() {
         val mutex = getMutex(downloadId)
         mutex.withLock {
             Log.d(TAG, "Retrying download: $downloadId")
+            retryAttempts.remove(downloadId)
             database.downloadDao().updateStatus(downloadId, DownloadState.QUEUED.name, null, pausedByNetwork = false)
             processQueue()
         }
@@ -412,7 +419,7 @@ class DownloadService : Service() {
         // Orden de la cola
         queuedList = when (settings.queueSortOrder) {
             QueueSortOrder.FIFO -> queuedList.sortedWith(compareBy({ it.queuePosition }, { it.createdAt }))
-            QueueSortOrder.SMALLEST_FIRST -> queuedList.sortedWith(compareBy({ it.queuePosition }, { it.totalBytes }))
+            QueueSortOrder.SMALLEST_FIRST -> queuedList.sortedWith(compareBy<DownloadEntity> { it.totalBytes }.thenBy { it.queuePosition }.thenBy { it.createdAt })
         }
 
         val toStart = queuedList.take(availableSlots)
@@ -613,26 +620,50 @@ class DownloadService : Service() {
             throw IOException("No se completaron todos los fragmentos para ensamblar.")
         }
 
-        // Reconstrucción del archivo uniendo físicamente las partes
-        val mediaStoreUri = assembleFinalFile(partsDirectory, orderedParts, entity.fileName)
+        // Reconstrucción del archivo uniendo físicamente las partes y verificando
+        // tamaño + SHA-256 antes de publicarlo como descarga completada.
+        val assembled = assembleFinalFile(partsDirectory, orderedParts, entity.fileName)
+        val mediaStoreUri = assembled.uri
+        val actualSize = assembled.size
+        val calculatedSha256 = assembled.sha256
+        val expectedSha256 = manifest.sha256?.trim()?.lowercase()
 
-        // Limpieza de partes temporales completadas
+        if (actualSize != totalManifestSize) {
+            try { contentResolver.delete(mediaStoreUri, null, null) } catch (_: Exception) {}
+            // Sin tamaño por fragmento no podemos saber cuál parte está corrupta;
+            // descartar los fragmentos evita que un retry reutilice datos incorrectos.
+            partsDirectory.listFiles()?.forEach { it.delete() }
+            throw IllegalStateException(
+                "El tamaño reconstruido no coincide con el manifiesto: " +
+                    "$actualSize bytes recibidos, $totalManifestSize esperados."
+            )
+        }
+
+        if (!expectedSha256.isNullOrBlank() && calculatedSha256.lowercase() != expectedSha256) {
+            try { contentResolver.delete(mediaStoreUri, null, null) } catch (_: Exception) {}
+            // Un hash final incorrecto no permite identificar qué fragmento falló;
+            // limpiar las partes fuerza una reconstrucción limpia en el siguiente retry.
+            partsDirectory.listFiles()?.forEach { it.delete() }
+            throw IllegalStateException("La verificación SHA-256 falló: el archivo recibido no coincide con el manifiesto.")
+        }
+
+        // El archivo solo se conserva si pasó las verificaciones.
         partsDirectory.listFiles()?.forEach { it.delete() }
         partsDirectory.delete()
 
         val completedAt = System.currentTimeMillis()
+        retryAttempts.remove(entity.id)
         database.downloadDao().markCompleted(
             id = entity.id,
             status = DownloadState.COMPLETED.name,
             uri = mediaStoreUri.toString(),
             path = "Download/Chunk/${entity.fileName}",
-            sha256 = manifest.sha256,
-            bytes = totalManifestSize,
+            sha256 = calculatedSha256,
+            bytes = actualSize,
             completedAt = completedAt
         )
 
-        Log.d(TAG, "Download completed: ${entity.fileName}")
-        // Reemplaza la notificación de progreso por la de éxito
+        Log.d(TAG, "Download completed and verified: ${entity.fileName}, sha256=$calculatedSha256")
         notificationManager.cancel(entity.id.hashCode())
         showCompletedNotification(entity.fileName, mediaStoreUri)
     }
@@ -660,58 +691,91 @@ class DownloadService : Service() {
             response = call.execute()
         } catch (e: IOException) {
             activeCalls[downloadId]?.remove(call)
-            if (pausingFlags[downloadId]?.get() == true) {
-                // Cancelación voluntaria por pausa
-                return
-            }
+            if (pausingFlags[downloadId]?.get() == true) return
             throw e
         }
 
-        if (!response.isSuccessful && response.code != 416) {
+        if (response.code == 416) {
+            // 416 solo puede significar que el servidor considera que el rango ya terminó.
+            // Nunca debemos convertirlo en .part sin comprobar el tamaño exacto del recurso.
+            val contentRange = response.header("Content-Range")
+            response.close()
+            activeCalls[downloadId]?.remove(call)
+
+            val totalSize = parseUnsatisfiedRangeTotal(contentRange)
+            if (totalSize != null && tempFile.exists() && tempFile.length() == totalSize) {
+                if (partFile.exists()) partFile.delete()
+                if (!tempFile.renameTo(partFile)) {
+                    throw IOException("No se pudo finalizar el fragmento descargado.")
+                }
+                onProgress(partFile.length())
+                return
+            }
+
+            throw IOException("El servidor rechazó el rango de reanudación (HTTP 416) y no se pudo verificar el tamaño del fragmento.")
+        }
+
+        if (!response.isSuccessful) {
             activeCalls[downloadId]?.remove(call)
             response.close()
+            if (response.code == 401 || response.code == 403 || response.code == 404) {
+                throw PermanentDownloadException("El servidor rechazó la parte (HTTP ${response.code}).")
+            }
             throw IOException("Error HTTP ${response.code} descargando fragmento.")
         }
 
-        if (response.code == 416) {
-            activeCalls[downloadId]?.remove(call)
-            response.close()
-            if (tempFile.exists()) {
-                tempFile.renameTo(partFile)
-                return
+        val isAppend = response.code == 206 && existingBytes > 0L
+        if (isAppend) {
+            val contentRange = response.header("Content-Range")
+            val rangeStart = parseContentRangeStart(contentRange)
+            if (rangeStart != existingBytes) {
+                activeCalls[downloadId]?.remove(call)
+                response.close()
+                throw IOException(
+                    "El servidor devolvió un rango incorrecto para reanudar el fragmento: " +
+                        "se esperaba $existingBytes y se recibió ${rangeStart ?: "desconocido"}."
+                )
             }
         }
 
-        val isAppend = response.code == 206 && existingBytes > 0L
-        val body = response.body ?: throw IOException("Cuerpo de respuesta vacío.")
+        val expectedResponseBytes = response.body?.contentLength()?.takeIf { it >= 0L }
+        val body = response.body ?: run {
+            activeCalls[downloadId]?.remove(call)
+            response.close()
+            throw IOException("Cuerpo de respuesta vacío.")
+        }
 
         var totalWritten = if (isAppend) existingBytes else 0L
+        var responseBytesWritten = 0L
 
         var throttleStartTime = System.currentTimeMillis()
         var bytesWrittenInWindow = 0L
 
         try {
             body.byteStream().use { input ->
+                // Si el servidor ignoró Range y respondió 200, se reinicia el fragmento
+                // desde cero en lugar de concatenar datos duplicados.
                 FileOutputStream(tempFile, isAppend).use { output ->
                     val buffer = ByteArray(BUFFER_SIZE)
                     var read: Int
 
                     while (input.read(buffer).also { read = it } != -1) {
-                        // Si llega orden de pausa, terminar de escribir el buffer actual y hacer flush antes de salir
                         if (pausingFlags[downloadId]?.get() == true) {
                             output.write(buffer, 0, read)
                             totalWritten += read
+                            responseBytesWritten += read
                             output.flush()
+                            onProgress(totalWritten)
                             Log.d(TAG, "Flushed and paused chunk cleanly: totalWritten=$totalWritten")
                             break
                         }
 
                         output.write(buffer, 0, read)
                         totalWritten += read
+                        responseBytesWritten += read
                         bytesWrittenInWindow += read
                         onProgress(totalWritten)
 
-                        // Límite de velocidad en tiempo real según los ajustes
                         val currentSpeedLimitBps = settingsManager.settings.value.speedLimit.bytesPerSec
                         if (currentSpeedLimitBps > 0) {
                             val elapsedMs = (System.currentTimeMillis() - throttleStartTime).coerceAtLeast(1L)
@@ -737,18 +801,52 @@ class DownloadService : Service() {
             activeCalls[downloadId]?.remove(call)
         }
 
-        // Si no se pausó y terminó de descargarse la parte completa, renombrar a .part
-        if (pausingFlags[downloadId]?.get() != true) {
-            if (partFile.exists()) partFile.delete()
-            tempFile.renameTo(partFile)
+        // Si el cuerpo terminó antes de lo anunciado, conservar .tmp para que el siguiente
+        // intento pueda reanudar exactamente desde el byte recibido. Nunca marcarlo como .part.
+        // Una pausa voluntaria no es una respuesta incompleta: el .tmp queda preparado
+        // para continuar mediante Range en el siguiente intento.
+        if (pausingFlags[downloadId]?.get() == true) return
+
+        if (expectedResponseBytes != null && responseBytesWritten != expectedResponseBytes) {
+            throw IOException(
+                "La respuesta del fragmento quedó incompleta: $responseBytesWritten bytes recibidos de $expectedResponseBytes."
+            )
         }
+
+        if (!tempFile.exists() || tempFile.length() <= 0L) {
+            throw IOException("El fragmento terminó sin datos.")
+        }
+
+        if (partFile.exists()) partFile.delete()
+        if (!tempFile.renameTo(partFile)) {
+            throw IOException("No se pudo finalizar el fragmento descargado.")
+        }
+        onProgress(partFile.length())
     }
+
+    private fun parseContentRangeStart(contentRange: String?): Long? {
+        if (contentRange.isNullOrBlank()) return null
+        val match = Regex("^bytes\\s+(\\d+)-\\d+/\\d+$", RegexOption.IGNORE_CASE).find(contentRange.trim())
+        return match?.groupValues?.getOrNull(1)?.toLongOrNull()
+    }
+
+    private fun parseUnsatisfiedRangeTotal(contentRange: String?): Long? {
+        if (contentRange.isNullOrBlank()) return null
+        val match = Regex("^bytes\\s+\\*/(\\d+)$", RegexOption.IGNORE_CASE).find(contentRange.trim())
+        return match?.groupValues?.getOrNull(1)?.toLongOrNull()
+    }
+
+    private data class AssembledFile(
+        val uri: Uri,
+        val size: Long,
+        val sha256: String
+    )
 
     private fun assembleFinalFile(
         partsDirectory: File,
         orderedParts: List<ChunkPart>,
         fileName: String
-    ): Uri {
+    ): AssembledFile {
         val resolver = contentResolver
         val contentValues = android.content.ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
@@ -767,27 +865,37 @@ class DownloadService : Service() {
             ?: throw IOException("No se pudo registrar el archivo en MediaStore.")
 
         val digest = MessageDigest.getInstance("SHA-256")
-        resolver.openOutputStream(uri, "w")?.use { rawOut ->
-            val digestOut = DigestOutputStream(rawOut, digest)
-            val buffer = ByteArray(BUFFER_SIZE)
-            for (part in orderedParts) {
-                val f = File(partsDirectory, "%05d.part".format(part.index))
-                if (!f.exists()) throw IOException("Falta fragmento ${part.index} para reconstruir.")
-                FileInputStream(f).use { input ->
-                    var read: Int
-                    while (input.read(buffer).also { read = it } != -1) {
-                        digestOut.write(buffer, 0, read)
+        var totalWritten = 0L
+        try {
+            resolver.openOutputStream(uri, "w")?.use { rawOut ->
+                val digestOut = DigestOutputStream(rawOut, digest)
+                val buffer = ByteArray(BUFFER_SIZE)
+                for (part in orderedParts) {
+                    val f = File(partsDirectory, "%05d.part".format(part.index))
+                    if (!f.exists()) throw IOException("Falta fragmento ${part.index} para reconstruir.")
+                    FileInputStream(f).use { input ->
+                        var read: Int
+                        while (input.read(buffer).also { read = it } != -1) {
+                            digestOut.write(buffer, 0, read)
+                            totalWritten += read
+                        }
                     }
                 }
+                digestOut.flush()
+            } ?: throw IOException("No se pudo escribir en el destino final.")
+
+            contentValues.clear()
+            contentValues.put(MediaStore.MediaColumns.IS_PENDING, 0)
+            if (resolver.update(uri, contentValues, null, null) <= 0) {
+                throw IOException("No se pudo finalizar el archivo en MediaStore.")
             }
-            digestOut.flush()
-        } ?: throw IOException("No se pudo escribir en el destino final.")
 
-        contentValues.clear()
-        contentValues.put(MediaStore.MediaColumns.IS_PENDING, 0)
-        resolver.update(uri, contentValues, null, null)
-
-        return uri
+            val calculatedSha256 = digest.digest().joinToString("") { "%02x".format(it) }
+            return AssembledFile(uri, totalWritten, calculatedSha256)
+        } catch (e: Exception) {
+            try { resolver.delete(uri, null, null) } catch (_: Exception) {}
+            throw e
+        }
     }
 
     private fun calculateDownloadedBytes(
@@ -809,27 +917,42 @@ class DownloadService : Service() {
 
     private fun handleDownloadError(downloadId: String, e: Exception) {
         val settings = settingsManager.settings.value
-        val isNetworkIssue = e is IOException || !isNetworkAvailable()
+        val networkUnavailable = !isNetworkAvailable()
+        val isVerificationError = e is IllegalStateException
+        val isPermanentError = e is PermanentDownloadException || isVerificationError
 
         serviceScope.launch {
-            if (isNetworkIssue) {
-                if (settings.autoRetry) {
+            if (networkUnavailable && !isPermanentError) {
+                database.downloadDao().updateStatus(
+                    downloadId,
+                    DownloadState.PAUSED.name,
+                    "Sin conexión a internet. Esperando conexión...",
+                    pausedByNetwork = true
+                )
+            } else if (settings.autoRetry && e is IOException && !isPermanentError) {
+                val attempt = (retryAttempts[downloadId]?.incrementAndGet() ?: 1)
+                if (attempt <= settings.maxRetries) {
                     database.downloadDao().updateStatus(
                         downloadId,
-                        DownloadState.PAUSED.name,
-                        "Red interrumpida. Esperando conexión...",
-                        pausedByNetwork = true
+                        DownloadState.QUEUED.name,
+                        "Reintentando ($attempt/${settings.maxRetries})...",
+                        pausedByNetwork = false
                     )
-                } else {
-                    database.downloadDao().updateStatus(
-                        downloadId,
-                        DownloadState.PAUSED.name,
-                        "Descarga pausada por pérdida de red.",
-                        pausedByNetwork = true
-                    )
+                    throttledUpdateNotifications()
+                    delay((1000L * attempt).coerceAtMost(10_000L))
+                    if (database.downloadDao().getDownloadById(downloadId)?.status == DownloadState.QUEUED.name) {
+                        processQueue()
+                    }
+                    return@launch
                 }
+
+                val msg = e.localizedMessage ?: "Se agotaron los reintentos."
+                retryAttempts.remove(downloadId)
+                database.downloadDao().markFailed(downloadId, DownloadState.ERROR.name, msg, System.currentTimeMillis())
+                showErrorNotification(downloadId, "Descarga fallida", msg)
             } else {
                 val msg = e.localizedMessage ?: "Error desconocido durante la descarga."
+                retryAttempts.remove(downloadId)
                 database.downloadDao().markFailed(downloadId, DownloadState.ERROR.name, msg, System.currentTimeMillis())
                 showErrorNotification(downloadId, "Descarga fallida", msg)
             }
@@ -867,7 +990,8 @@ class DownloadService : Service() {
                     for (item in active) {
                         pausingFlags[item.id]?.set(true)
                         activeCalls[item.id]?.forEach { try { it.cancel() } catch (_: Exception) {} }
-                        activeJobs.remove(item.id)?.cancel()
+                        activeJobs[item.id]?.cancelAndJoin()
+                        activeJobs.remove(item.id)
                         database.downloadDao().updateStatus(item.id, DownloadState.PAUSED.name, "Sin conexión a internet.", pausedByNetwork = true)
                     }
                     releaseLocksIfIdle()

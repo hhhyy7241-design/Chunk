@@ -7,6 +7,9 @@ on:
       - master
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -81,7 +84,7 @@ jobs:
           echo "STORE_PASSWORD=$STORE_PASS" >> $GITHUB_ENV
           echo "KEY_PASSWORD=$KEY_PASS" >> $GITHUB_ENV
 
-          # Copia redundante en la raíz y en el subdirectorio app/
+          # Copia de seguridad en la raíz y en el subdirectorio app/
           cp -f "$KEYSTORE_FILE" "app/$KEYSTORE_FILE" || true
 
       - name: Build Release APK
@@ -112,3 +115,18 @@ jobs:
           path: app/build/outputs/apk/release/*.apk
           if-no-files-found: error
           retention-days: 30
+
+      - name: Publish Direct APK to GitHub Releases
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: "Download Chunk - APK Instalable"
+          body: |
+            ### 📱 Download Chunk (Última Versión)
+            Descarga directa para instalar o actualizar la app en tu teléfono Android:
+            - **Descarga directa:** Haz clic en `app-release.apk` abajo para descargar e instalar directamente.
+            - **Firma persistente:** Conserva la misma firma (`my-upload-key.jks`) para actualizar sobre versiones previas sin desinstalar.
+          files: app/build/outputs/apk/release/*.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

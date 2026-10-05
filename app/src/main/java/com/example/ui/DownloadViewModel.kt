@@ -83,7 +83,7 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
     ) { queued, settings ->
         when (settings.queueSortOrder) {
             QueueSortOrder.FIFO -> queued.sortedWith(compareBy({ it.queuePosition }, { it.createdAt }))
-            QueueSortOrder.SMALLEST_FIRST -> queued.sortedWith(compareBy({ it.queuePosition }, { it.totalBytes }))
+            QueueSortOrder.SMALLEST_FIRST -> queued.sortedWith(compareBy<DownloadEntity> { it.totalBytes }.thenBy { it.queuePosition }.thenBy { it.createdAt })
         }
     }.stateIn(
         scope = viewModelScope,

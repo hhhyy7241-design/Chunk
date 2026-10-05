@@ -28,7 +28,6 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -135,6 +134,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
@@ -179,7 +179,7 @@ fun MoodleDownloadScreen(
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
-    val isDark = isSystemInDarkTheme()
+    val isDark = MaterialTheme.colorScheme.surface.luminance() < 0.5f
 
     val selectedTab by viewModel.selectedTab.collectAsStateWithLifecycle()
     val codeText by viewModel.codeText.collectAsStateWithLifecycle()
@@ -225,8 +225,44 @@ fun MoodleDownloadScreen(
                 onOpenCompleted = {
                     viewModel.selectTab(1)
                     scope.launch {
-                        val targetIndex = (downloadingDownloads.size + queuedDownloads.size + pausedDownloads.size).coerceAtLeast(0) + 1
-                        activeListState.animateScrollToItem(targetIndex)
+                        val totalActiveAndQueued =
+                            downloadingDownloads.size + queuedDownloads.size + pausedDownloads.size
+
+                        // Calcular el índice real de la sección "Completados".
+                        // La lista contiene encabezados/acciones intercalados con las tarjetas.
+                        if (completedDownloads.isNotEmpty()) {
+                            var targetIndex = 0
+
+                            if (totalActiveAndQueued > 1) {
+                                targetIndex += 1 // acciones globales
+                            }
+
+                            if (totalActiveAndQueued == 0) {
+                                targetIndex += 1 // "Sin descargas activas"
+                            }
+
+                            if (downloadingDownloads.isNotEmpty()) {
+                                targetIndex += 1 + downloadingDownloads.size
+                            }
+                            if (queuedDownloads.isNotEmpty()) {
+                                targetIndex += 1 + queuedDownloads.size
+                            }
+                            if (pausedDownloads.isNotEmpty()) {
+                                targetIndex += 1 + pausedDownloads.size
+                            }
+
+                            var totalItems = 1 // spacer final
+
+                            if (totalActiveAndQueued > 1) totalItems += 1
+                            if (totalActiveAndQueued == 0) totalItems += 1
+                            if (downloadingDownloads.isNotEmpty()) totalItems += 1 + downloadingDownloads.size
+                            if (queuedDownloads.isNotEmpty()) totalItems += 1 + queuedDownloads.size
+                            if (pausedDownloads.isNotEmpty()) totalItems += 1 + pausedDownloads.size
+                            totalItems += 1 + completedDownloads.size // sección + tarjetas
+
+                            val safeIndex = targetIndex.coerceIn(0, (totalItems - 1).coerceAtLeast(0))
+                            activeListState.animateScrollToItem(safeIndex)
+                        }
                     }
                 },
                 onOpenSettings = { showSettingsSheet = true }
@@ -400,7 +436,7 @@ fun FloatingPillNavigationBar(
     onSelect: (Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val isDark = isSystemInDarkTheme()
+    val isDark = MaterialTheme.colorScheme.surface.luminance() < 0.5f
 
     Box(
         modifier = modifier,
@@ -770,7 +806,7 @@ fun DownloadInputTab(
 fun VerifiedManifestCard(manifest: MoodleManifest) {
     val fileIcon = getFileIconForExtension(manifest.filename)
     val isApk = manifest.filename.endsWith(".apk", ignoreCase = true)
-    val isDark = isSystemInDarkTheme()
+    val isDark = MaterialTheme.colorScheme.surface.luminance() < 0.5f
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -988,7 +1024,7 @@ fun ActiveTasksTab(
 ) {
     val context = LocalContext.current
     val reducedMotion = remember { isReducedMotion(context) }
-    val isDark = isSystemInDarkTheme()
+    val isDark = MaterialTheme.colorScheme.surface.luminance() < 0.5f
 
     val totalActiveAndQueued = downloadingDownloads.size + queuedDownloads.size + pausedDownloads.size
 
@@ -1861,7 +1897,7 @@ fun CompletedFileCard(
     val fileIcon = getFileIconForExtension(item.fileName)
     val isSuccess = item.status == DownloadState.COMPLETED.name
     val isWarning = item.status == "COMPLETED_WARN_HASH"
-    val isDark = isSystemInDarkTheme()
+    val isDark = MaterialTheme.colorScheme.surface.luminance() < 0.5f
 
     Card(
         modifier = Modifier

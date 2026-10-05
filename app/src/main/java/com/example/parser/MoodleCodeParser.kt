@@ -163,7 +163,10 @@ object MoodleCodeParser {
             throw IllegalArgumentException("El tamaño especificado en el manifiesto no puede ser negativo.")
         }
 
-        val sha256 = root.optString("sha256").takeIf { it.isNotBlank() }
+        val sha256 = root.optString("sha256").trim().takeIf { it.isNotBlank() }
+        if (sha256 != null && !sha256.matches(Regex("^[0-9a-fA-F]{64}$"))) {
+            throw IllegalArgumentException("El SHA-256 del manifiesto no tiene un formato válido.")
+        }
         val created = root.optLong("created", -1L).takeIf { it > 0 }
 
         val partsArray = root.optJSONArray("parts")
@@ -184,15 +187,15 @@ object MoodleCodeParser {
                 throw IllegalArgumentException("La parte ${i + 1} no tiene un índice válido.")
             }
             val index = partObj.getInt("index")
-            if (index < 0) {
-                throw IllegalArgumentException("Índice de parte no válido: $index.")
+            if (index <= 0) {
+                throw IllegalArgumentException("Índice de parte no válido: $index. Los índices deben comenzar en 1.")
             }
             if (seenIndices.contains(index)) {
                 throw IllegalArgumentException("Se detectaron índices de partes duplicados ($index).")
             }
             seenIndices.add(index)
 
-            val url = partObj.optString("url")
+            val url = partObj.optString("url").trim()
             if (url.isBlank() || !isValidMoodleUrl(url)) {
                 throw IllegalArgumentException("La URL de una parte no es válida.")
             }
@@ -201,6 +204,14 @@ object MoodleCodeParser {
         }
 
         val orderedParts = rawParts.sortedBy { it.index }
+        val expectedIndices = (1..orderedParts.size).toList()
+        val actualIndices = orderedParts.map { it.index }
+        if (actualIndices != expectedIndices) {
+            throw IllegalArgumentException(
+                "Los índices de las partes deben ser consecutivos desde 1. " +
+                    "Se recibieron: ${actualIndices.joinToString(", ")}."
+            )
+        }
 
         return MoodleManifest(
             version = version,

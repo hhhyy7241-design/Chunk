@@ -8,10 +8,10 @@ Aplicación Android nativa moderna (2026) construida con Kotlin y Jetpack Compos
 
 - **Diseño 2026 Minimalista:** Interfaz limpia con navegación segmentada tipo píldora, sin tecnicismos innecesarios ni elementos visuales distractores.
 - **Validación Automática:** Decodificación Base64 URL-safe, descompresión zlib y verificación estricta de estructura y formato antes de descargar.
-- **Descargas Persistentes con WorkManager:** Tareas en segundo plano con notificación persistente, progreso en tiempo real, velocidad (MB/s) y tiempo estimado.
+- **Descargas Persistentes con servicio foreground nativo:** Tareas en segundo plano con notificación persistente, progreso en tiempo real, velocidad (MB/s) y tiempo estimado.
 - **Reanudación Determinista:** Conserva partes completadas automáticamente para no descargar bloques repetidos si la conexión se interrumpe.
 - **Almacenamiento Público Directo:** Reconstruye y almacena los archivos completos en `Download/Chunk` mediante MediaStore con soporte nativo Android 10 a Android 15+.
-- **Firma Persistente y Consistente:** Keystore único (`my-upload-key.jks`) configurado para que cada compilación en GitHub Actions genere APKs con la misma firma digital, permitiendo actualizar la aplicación instalada sin necesidad de desinstalar la versión anterior.
+- **Firma Persistente y Consistente:** El proyecto conserva su keystore de firma actual (`my-upload-key.jks`) para mantener la compatibilidad de actualización del APK. Para producción, ese archivo debe mantenerse privado y gestionarse como secreto de CI.
 
 ---
 
@@ -27,24 +27,21 @@ El repositorio incluye un flujo de trabajo CI/CD completamente automatizado en `
 
 ## 📲 Cómo Descargar e Instalar el APK en tu Teléfono Móvil
 
-Sigue estos sencillos pasos para instalar o actualizar **Download Chunk** directamente desde tu teléfono móvil:
+Hay dos formas muy sencillas de instalar o actualizar **Download Chunk** en tu teléfono:
 
-1. **Abrir GitHub en el navegador del teléfono:**
-   - Ingresa al repositorio de tu proyecto en GitHub.
-2. **Ir a la pestaña "Actions":**
-   - Toca la pestaña **Actions** en la barra superior del repositorio.
-3. **Seleccionar la última ejecución:**
-   - Toca la ejecución más reciente del flujo de trabajo (con un círculo verde de éxito ✅ llamado **Build Signed Release APK**).
-4. **Descargar el Artefacto:**
-   - Desplázate hasta la sección inferior llamada **Artifacts** (Artefactos).
-   - Toca el archivo **`app-release-apk`**. El navegador descargará un archivo comprimido `app-release-apk.zip`.
-5. **Descomprimir e Instalar:**
-   - Abre la aplicación de **Archivos** o **Descargas** de tu teléfono.
-   - Toca `app-release-apk.zip` y pulsa **Extraer / Descomprimir**.
-   - Encontrarás el archivo **`app-release.apk`**.
-   - Toca el archivo `.apk` y selecciona **Instalar** (si el sistema solicita permiso para instalar aplicaciones de fuentes desconocidas para tu explorador, concédelo).
-6. **Actualizaciones Futuras:**
-   - Gracias a la configuración de firma fija (`my-upload-key.jks`), cuando descargues e instales una nueva versión generada por GitHub Actions, tu teléfono la actualizará directamente manteniendo tus datos e historial, **sin requerir desinstalar la versión previa**.
+### Método 1: Descarga directa desde "Releases" (Recomendado — 1 Clic)
+1. En tu teléfono, abre el repositorio en GitHub y toca la sección **Releases** (en la página principal del repositorio).
+2. En la versión más reciente (**Download Chunk - APK Instalable**), toca el archivo **`app-release.apk`**.
+3. Se descargará el `.apk` directamente sin necesidad de descomprimir nada.
+4. Toca el archivo descargado y presiona **Instalar** (o **Actualizar**).
+
+### Método 2: Desde la pestaña "Actions"
+1. En GitHub, abre la pestaña **Actions**.
+2. Selecciona la ejecución más reciente con el círculo verde de éxito (**Build Signed Release APK**).
+3. En la parte inferior, en la sección **Artifacts**, descarga **`app-release-apk`**.
+4. Descomprime el archivo `.zip` en tu teléfono e instala el archivo **`app-release.apk`** que contiene.
+
+> **Actualizaciones automáticas sin perder datos:** Gracias a la firma fija persistente (`my-upload-key.jks`), cualquier APK generado por GitHub Actions se instala directamente como una actualización encima de la app instalada, conservando tu historial y descargas sin tener que desinstalarla.
 
 ---
 
@@ -61,5 +58,5 @@ app/build/outputs/apk/release/app-release.apk
 
 Para ejecutar las pruebas:
 ```bash
-gradle :app:testDebugUnitTest
+./gradlew :app:testDebugUnitTest --no-daemon
 ```
