@@ -617,6 +617,7 @@ class MoodleDownloadWorker(
             .setOnlyAlertOnce(true)
             .setContentIntent(contentIntent)
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Cancelar", cancelIntent)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .apply {
                 if (state == DownloadState.DOWNLOADING_PART || state == DownloadState.REUSING_COMPLETED_PART) {
                     setProgress(100, percent.coerceIn(0, 99), false)
@@ -667,6 +668,7 @@ class MoodleDownloadWorker(
             .setSmallIcon(if (success) android.R.drawable.stat_sys_download_done else android.R.drawable.stat_notify_error)
             .setAutoCancel(true)
             .setContentIntent(pendingIntent)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setStyle(NotificationCompat.BigTextStyle().bigText(message))
             .build()
 
@@ -700,6 +702,7 @@ class MoodleDownloadWorker(
             ).apply {
                 description = "Notificaciones de descarga y reconstrucción de Download Chunk"
                 setShowBadge(false)
+                lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
             }
             notificationManager.createNotificationChannel(channel)
         }

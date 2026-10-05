@@ -43,11 +43,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import okhttp3.Call
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -61,6 +64,8 @@ import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 
 class DownloadService : Service() {
 
@@ -128,7 +133,7 @@ class DownloadService : Service() {
     // Sincronización y colas seguras
     private val mutexMap = ConcurrentHashMap<String, Mutex>()
     private val activeJobs = ConcurrentHashMap<String, Job>()
-    private val activeCalls = ConcurrentHashMap<String, Call>()
+    private val activeCalls = ConcurrentHashMap<String, MutableSet<Call>>()
     private val pausingFlags = ConcurrentHashMap<String, AtomicBoolean>()
 
     // Rate limiter para notificaciones (máximo 2 por segundo = 500ms entre actualizaciones)
@@ -154,6 +159,7 @@ class DownloadService : Service() {
         createNotificationChannels()
         initLocks()
         registerNetworkCallback()
+        observeSettingsChanges()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -243,7 +249,7 @@ class DownloadService : Service() {
 
             // 2. Señalizar que termine la escritura en curso y cancelar la llamada HTTP
             pausingFlags[downloadId]?.set(true)
-            activeCalls[downloadId]?.cancel()
+            activeCalls[downloadId]?.forEach { try { it.cancel() } catch (_: Exception) {} }
 
             // 3. Esperar que el trabajo activo termine ordenadamente de guardar en disco
             val job = activeJobs.remove(downloadId)
@@ -294,7 +300,7 @@ class DownloadService : Service() {
         mutex.withLock {
             Log.d(TAG, "Cancelling download: $downloadId")
             pausingFlags[downloadId]?.set(true)
-            activeCalls.remove(downloadId)?.cancel()
+            activeCalls.remove(downloadId)?.forEach { try { it.cancel() } catch (_: Exception) {} }
             activeJobs.remove(downloadId)?.cancel()
 
             database.downloadDao().updateStatus(downloadId, DownloadState.CANCELLED.name, null)
@@ -383,7 +389,20 @@ class DownloadService : Service() {
 
         Log.d(TAG, "processQueue: activeCount=$activeCount, maxLimit=$maxLimit, availableSlots=$availableSlots")
 
-        if (availableSlots <= 0) {
+        if (availableSlots < 0) {
+            val excessCount = -availableSlots
+            val currentlyActive = database.downloadDao().getCurrentlyDownloading()
+            val toPause = currentlyActive.takeLast(excessCount)
+            for (item in toPause) {
+                Log.d(TAG, "Real-time pausing excess download to conform to max limit: ${item.id}")
+                handlePauseCommand(item.id)
+                database.downloadDao().updateStatus(item.id, DownloadState.QUEUED.name, null, pausedByNetwork = false)
+            }
+            throttledUpdateNotifications()
+            return
+        }
+
+        if (availableSlots == 0) {
             throttledUpdateNotifications()
             return
         }
@@ -467,95 +486,131 @@ class DownloadService : Service() {
         val totalParts = orderedParts.size
         val totalManifestSize = manifest.size
 
-        var lastSpeedCalcTime = System.currentTimeMillis()
-        var lastBytesForSpeed = entity.downloadedBytes
-
-        for ((idx, part) in orderedParts.withIndex()) {
-            if (!coroutineScopeIsActive()) break
-            if (pausingFlags[entity.id]?.get() == true) break
-
+        var initialCompletedBytes = 0L
+        var initialCompletedCount = 0
+        for (part in orderedParts) {
             val partFile = File(partsDirectory, "%05d.part".format(part.index))
-            val tempFile = File(partsDirectory, "%05d.tmp".format(part.index))
-
             if (partFile.exists() && partFile.length() > 0L) {
-                val completedCount = idx + 1
-                val downloadedSoFar = calculateDownloadedBytes(partsDirectory, orderedParts, part.index)
-                database.downloadDao().updateProgress(
-                    entity.id,
-                    DownloadState.DOWNLOADING.name,
-                    part.index,
-                    completedCount,
-                    downloadedSoFar,
-                    0L,
-                    0L
-                )
-                continue
+                initialCompletedBytes += partFile.length()
+                initialCompletedCount++
             }
-
-            // Descarga de la parte con HTTP Range
-            downloadPartWithRange(
-                downloadId = entity.id,
-                partUrl = part.url,
-                tempFile = tempFile,
-                partFile = partFile,
-                onProgress = { bytesInPart ->
-                    val now = System.currentTimeMillis()
-                    val durationSec = (now - lastSpeedCalcTime) / 1000.0
-                    var speed = 0L
-                    if (durationSec >= 1.0) {
-                        val downloadedTotal = calculateDownloadedBytes(partsDirectory, orderedParts, part.index - 1) + bytesInPart
-                        val delta = downloadedTotal - lastBytesForSpeed
-                        if (delta >= 0) {
-                            speed = (delta / durationSec).toLong()
-                        }
-                        lastBytesForSpeed = downloadedTotal
-                        lastSpeedCalcTime = now
-                    }
-
-                    val downloadedTotal = calculateDownloadedBytes(partsDirectory, orderedParts, part.index - 1) + bytesInPart
-                    val eta = if (speed > 0 && totalManifestSize > downloadedTotal) {
-                        (totalManifestSize - downloadedTotal) / speed
-                    } else 0L
-
-                    serviceScope.launch {
-                        database.downloadDao().updateProgress(
-                            entity.id,
-                            DownloadState.DOWNLOADING.name,
-                            part.index,
-                            idx,
-                            downloadedTotal,
-                            speed,
-                            eta
-                        )
-                    }
-
-                    throttledUpdateNotifications()
-                }
-            )
-
-            if (pausingFlags[entity.id]?.get() == true) {
-                Log.d(TAG, "Pause detected after part ${part.index} completed or stopped.")
-                break
-            }
-
-            // Parte completada
-            val completedCount = idx + 1
-            val downloadedSoFar = calculateDownloadedBytes(partsDirectory, orderedParts, part.index)
-            database.downloadDao().updateProgress(
-                entity.id,
-                DownloadState.DOWNLOADING.name,
-                part.index,
-                completedCount,
-                downloadedSoFar,
-                0L,
-                0L
-            )
         }
 
-        // Si se pausó durante el bucle, no ensamblar todavía
+        val completedBytes = AtomicLong(initialCompletedBytes)
+        val completedCount = AtomicInteger(initialCompletedCount)
+        val activePartBytes = ConcurrentHashMap<Int, Long>()
+
+        val speedBpsAtomic = AtomicLong(if (entity.speedBps > 0) entity.speedBps else 0L)
+        val etaAtomic = AtomicLong(entity.etaSeconds)
+        val lastSpeedCalcTimeAtomic = AtomicLong(System.currentTimeMillis())
+        val lastBytesForSpeedAtomic = AtomicLong(initialCompletedBytes)
+        val lastDbUpdateTimeAtomic = AtomicLong(0L)
+
+        fun getTotalDownloaded(): Long = completedBytes.get() + activePartBytes.values.sum()
+
+        val maxConcurrentParts = settingsManager.settings.value.maxConcurrentParts.coerceIn(1, 4)
+        val semaphore = Semaphore(maxConcurrentParts)
+
+        coroutineScope {
+            for (part in orderedParts) {
+                if (!coroutineScopeIsActive() || pausingFlags[entity.id]?.get() == true) break
+
+                val partFile = File(partsDirectory, "%05d.part".format(part.index))
+                val tempFile = File(partsDirectory, "%05d.tmp".format(part.index))
+
+                if (partFile.exists() && partFile.length() > 0L) {
+                    continue
+                }
+
+                launch {
+                    semaphore.withPermit {
+                        if (!coroutineScopeIsActive() || pausingFlags[entity.id]?.get() == true) return@withPermit
+
+                        downloadPartWithRange(
+                            downloadId = entity.id,
+                            partUrl = part.url,
+                            tempFile = tempFile,
+                            partFile = partFile,
+                            onProgress = { bytesInPart ->
+                                activePartBytes[part.index] = bytesInPart
+                                val now = System.currentTimeMillis()
+                                val downloadedTotal = getTotalDownloaded()
+
+                                val lastCalcTime = lastSpeedCalcTimeAtomic.get()
+                                val durationMs = now - lastCalcTime
+                                if (durationMs >= 350L && lastSpeedCalcTimeAtomic.compareAndSet(lastCalcTime, now)) {
+                                    val lastBytes = lastBytesForSpeedAtomic.getAndSet(downloadedTotal)
+                                    val delta = downloadedTotal - lastBytes
+                                    if (delta >= 0) {
+                                        val instantSpeed = (delta * 1000L) / durationMs
+                                        val prevSpeed = speedBpsAtomic.get()
+                                        val newSpeed = if (prevSpeed > 0) {
+                                            ((prevSpeed * 0.70) + (instantSpeed * 0.30)).toLong().coerceAtLeast(1024L)
+                                        } else {
+                                            instantSpeed.coerceAtLeast(1024L)
+                                        }
+                                        speedBpsAtomic.set(newSpeed)
+                                        if (newSpeed > 0 && totalManifestSize > downloadedTotal) {
+                                            etaAtomic.set((totalManifestSize - downloadedTotal) / newSpeed)
+                                        }
+                                    }
+                                }
+
+                                val lastDb = lastDbUpdateTimeAtomic.get()
+                                if (now - lastDb >= 350L && lastDbUpdateTimeAtomic.compareAndSet(lastDb, now)) {
+                                    val highestActive = activePartBytes.keys.maxOrNull() ?: (completedCount.get() + 1)
+                                    serviceScope.launch {
+                                        database.downloadDao().updateProgress(
+                                            entity.id,
+                                            DownloadState.DOWNLOADING.name,
+                                            highestActive.coerceIn(1, totalParts),
+                                            completedCount.get(),
+                                            downloadedTotal,
+                                            speedBpsAtomic.get(),
+                                            etaAtomic.get()
+                                        )
+                                    }
+                                    throttledUpdateNotifications()
+                                }
+                            }
+                        )
+
+                        if (pausingFlags[entity.id]?.get() != true && partFile.exists()) {
+                            activePartBytes.remove(part.index)
+                            completedBytes.addAndGet(partFile.length())
+                            val doneCount = completedCount.incrementAndGet()
+                            val downloadedTotal = getTotalDownloaded()
+                            lastBytesForSpeedAtomic.set(downloadedTotal)
+                            val highestActive = activePartBytes.keys.maxOrNull() ?: doneCount
+
+                            serviceScope.launch {
+                                database.downloadDao().updateProgress(
+                                    entity.id,
+                                    DownloadState.DOWNLOADING.name,
+                                    highestActive.coerceIn(1, totalParts),
+                                    doneCount,
+                                    downloadedTotal,
+                                    speedBpsAtomic.get(),
+                                    etaAtomic.get()
+                                )
+                            }
+                            throttledUpdateNotifications()
+                        }
+                    }
+                }
+            }
+        }
+
+        // Si se pausó durante la descarga, no ensamblar todavía
         if (pausingFlags[entity.id]?.get() == true) {
-            Log.d(TAG, "Pipeline paused before assembly: $entity.id")
+            Log.d(TAG, "Pipeline paused before assembly: ${entity.id}")
             return
+        }
+
+        val allPartsPresent = orderedParts.all { File(partsDirectory, "%05d.part".format(it.index)).exists() }
+        if (!allPartsPresent) {
+            if (pausingFlags[entity.id]?.get() == true) return
+            throw IOException("No se completaron todos los fragmentos para ensamblar.")
         }
 
         // Reconstrucción del archivo uniendo físicamente las partes
@@ -598,12 +653,13 @@ class DownloadService : Service() {
 
         val request = requestBuilder.build()
         val call = client.newCall(request)
-        activeCalls[downloadId] = call
+        activeCalls.computeIfAbsent(downloadId) { ConcurrentHashMap.newKeySet() }.add(call)
 
         val response: Response
         try {
             response = call.execute()
         } catch (e: IOException) {
+            activeCalls[downloadId]?.remove(call)
             if (pausingFlags[downloadId]?.get() == true) {
                 // Cancelación voluntaria por pausa
                 return
@@ -612,11 +668,13 @@ class DownloadService : Service() {
         }
 
         if (!response.isSuccessful && response.code != 416) {
+            activeCalls[downloadId]?.remove(call)
             response.close()
             throw IOException("Error HTTP ${response.code} descargando fragmento.")
         }
 
         if (response.code == 416) {
+            activeCalls[downloadId]?.remove(call)
             response.close()
             if (tempFile.exists()) {
                 tempFile.renameTo(partFile)
@@ -628,7 +686,6 @@ class DownloadService : Service() {
         val body = response.body ?: throw IOException("Cuerpo de respuesta vacío.")
 
         var totalWritten = if (isAppend) existingBytes else 0L
-        val speedLimitBps = settingsManager.settings.value.speedLimit.bytesPerSec
 
         var throttleStartTime = System.currentTimeMillis()
         var bytesWrittenInWindow = 0L
@@ -654,20 +711,22 @@ class DownloadService : Service() {
                         bytesWrittenInWindow += read
                         onProgress(totalWritten)
 
-                        // Límite de velocidad si está configurado
-                        if (speedLimitBps > 0) {
-                            val elapsedMs = System.currentTimeMillis() - throttleStartTime
-                            val expectedMs = (bytesWrittenInWindow * 1000L) / speedLimitBps
+                        // Límite de velocidad en tiempo real según los ajustes
+                        val currentSpeedLimitBps = settingsManager.settings.value.speedLimit.bytesPerSec
+                        if (currentSpeedLimitBps > 0) {
+                            val elapsedMs = (System.currentTimeMillis() - throttleStartTime).coerceAtLeast(1L)
+                            val expectedMs = (bytesWrittenInWindow * 1000L) / currentSpeedLimitBps
                             if (expectedMs > elapsedMs) {
-                                val sleepMs = expectedMs - elapsedMs
-                                if (sleepMs > 0 && sleepMs < 1000L) {
-                                    SystemClock.sleep(sleepMs)
-                                }
+                                val sleepMs = (expectedMs - elapsedMs).coerceIn(1L, 400L)
+                                SystemClock.sleep(sleepMs)
                             }
                             if (elapsedMs >= 1000L) {
                                 throttleStartTime = System.currentTimeMillis()
                                 bytesWrittenInWindow = 0L
                             }
+                        } else {
+                            throttleStartTime = System.currentTimeMillis()
+                            bytesWrittenInWindow = 0L
                         }
                     }
                     output.flush()
@@ -675,7 +734,7 @@ class DownloadService : Service() {
             }
         } finally {
             response.close()
-            activeCalls.remove(downloadId)
+            activeCalls[downloadId]?.remove(call)
         }
 
         // Si no se pausó y terminó de descargarse la parte completa, renombrar a .part
@@ -807,7 +866,7 @@ class DownloadService : Service() {
                     val active = database.downloadDao().getCurrentlyDownloading()
                     for (item in active) {
                         pausingFlags[item.id]?.set(true)
-                        activeCalls[item.id]?.cancel()
+                        activeCalls[item.id]?.forEach { try { it.cancel() } catch (_: Exception) {} }
                         activeJobs.remove(item.id)?.cancel()
                         database.downloadDao().updateStatus(item.id, DownloadState.PAUSED.name, "Sin conexión a internet.", pausedByNetwork = true)
                     }
@@ -820,6 +879,56 @@ class DownloadService : Service() {
         try {
             cm.registerNetworkCallback(builder.build(), networkCallback!!)
         } catch (_: Exception) {}
+    }
+
+    private fun observeSettingsChanges() {
+        serviceScope.launch {
+            settingsManager.settings.collect { settings ->
+                Log.d(TAG, "Settings updated in real-time: wifiOnly=${settings.wifiOnly}, maxConcurrent=${settings.maxConcurrentDownloads}, limit=${settings.speedLimit}")
+
+                // 1. Reaccionar a cambios en Solo con Wi-Fi en tiempo real
+                if (settings.wifiOnly && !isWifiConnected()) {
+                    val downloading = database.downloadDao().getCurrentlyDownloading()
+                    for (item in downloading) {
+                        Log.d(TAG, "Real-time pause by Wi-Fi only setting: ${item.id}")
+                        database.downloadDao().updateStatus(
+                            item.id,
+                            DownloadState.PAUSED.name,
+                            "Pausada: Solo con Wi-Fi está activado.",
+                            pausedByNetwork = true
+                        )
+                        pausingFlags[item.id]?.set(true)
+                        activeCalls[item.id]?.forEach { try { it.cancel() } catch (_: Exception) {} }
+                    }
+                    releaseLocksIfIdle()
+                    throttledUpdateNotifications()
+                } else if (!settings.wifiOnly && isNetworkAvailable()) {
+                    val pausedByNet = database.downloadDao().getUnfinishedDownloads().filter { it.pausedByNetwork }
+                    for (item in pausedByNet) {
+                        database.downloadDao().updateStatus(item.id, DownloadState.QUEUED.name, null, pausedByNetwork = false)
+                    }
+                    processQueue()
+                }
+
+                // 2. Reaccionar a cambios en límite de descargas simultáneas en tiempo real
+                processQueue()
+
+                // 3. Reaccionar a cambios en notificaciones de progreso en tiempo real
+                if (!settings.showProgressNotifications) {
+                    notificationManager.cancel(NOTIFICATION_SUMMARY_ID)
+                    val downloading = database.downloadDao().getCurrentlyDownloading()
+                    for (item in downloading) {
+                        notificationManager.cancel(item.id.hashCode())
+                    }
+                    val paused = database.downloadDao().getUnfinishedDownloads().filter { it.status == DownloadState.PAUSED.name }
+                    for (item in paused) {
+                        notificationManager.cancel(item.id.hashCode())
+                    }
+                } else {
+                    throttledUpdateNotifications()
+                }
+            }
+        }
     }
 
     private fun isWifiConnected(): Boolean {
@@ -968,6 +1077,7 @@ class DownloadService : Service() {
             .setOnlyAlertOnce(true)
             .setContentIntent(contentIntent)
             .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
 
         if (activeCount > 0) {
             builder.setProgress(100, percent, false)
@@ -1008,6 +1118,7 @@ class DownloadService : Service() {
             .setOnlyAlertOnce(true)
             .setContentIntent(contentIntent)
             .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
 
         if (!isPaused) {
             builder.setProgress(100, percent, percent == 0)
@@ -1061,6 +1172,7 @@ class DownloadService : Service() {
                 .setContentText("Servicio de descargas activo")
                 .setSmallIcon(android.R.drawable.stat_sys_download)
                 .setPriority(NotificationCompat.PRIORITY_LOW)
+                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
                 .setOngoing(true)
                 .build()
 
@@ -1096,6 +1208,7 @@ class DownloadService : Service() {
             .setAutoCancel(true)
             .addAction(android.R.drawable.ic_menu_share, "Compartir", pendingShare)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
 
         if (settings.soundOnComplete) {
             val soundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
@@ -1121,6 +1234,7 @@ class DownloadService : Service() {
             .setAutoCancel(true)
             .addAction(android.R.drawable.ic_menu_rotate, "Reintentar", retryIntent)
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
 
         try {
             notificationManager.notify(downloadId.hashCode() + 600, builder.build())
@@ -1160,6 +1274,7 @@ class DownloadService : Service() {
                 setSound(null, null)
                 enableVibration(false)
                 setShowBadge(false)
+                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
             }
 
             val completedChannel = NotificationChannel(
@@ -1170,6 +1285,7 @@ class DownloadService : Service() {
                 description = "Avisos de descargas completadas con éxito"
                 enableVibration(true)
                 setShowBadge(true)
+                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
             }
 
             val errorChannel = NotificationChannel(
@@ -1178,6 +1294,7 @@ class DownloadService : Service() {
                 NotificationManager.IMPORTANCE_DEFAULT
             ).apply {
                 description = "Avisos de fallos o interrupciones en descargas"
+                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
             }
 
             notificationManager.createNotificationChannels(listOf(progressChannel, completedChannel, errorChannel))

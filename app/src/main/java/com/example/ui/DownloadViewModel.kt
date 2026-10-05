@@ -23,6 +23,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -76,12 +77,19 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
             initialValue = emptyList()
         )
 
-    val queuedDownloads: StateFlow<List<DownloadEntity>> = repository.queuedDownloads
-        .stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.WhileSubscribed(5000),
-            initialValue = emptyList()
-        )
+    val queuedDownloads: StateFlow<List<DownloadEntity>> = combine(
+        repository.queuedDownloads,
+        settingsManager.settings
+    ) { queued, settings ->
+        when (settings.queueSortOrder) {
+            QueueSortOrder.FIFO -> queued.sortedWith(compareBy({ it.queuePosition }, { it.createdAt }))
+            QueueSortOrder.SMALLEST_FIRST -> queued.sortedWith(compareBy({ it.queuePosition }, { it.totalBytes }))
+        }
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = emptyList()
+    )
 
     val pausedDownloads: StateFlow<List<DownloadEntity>> = repository.pausedDownloads
         .stateIn(

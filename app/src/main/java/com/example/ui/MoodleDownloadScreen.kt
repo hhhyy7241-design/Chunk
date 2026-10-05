@@ -1477,7 +1477,13 @@ fun ActiveTaskCard(
                     )
                 }
 
-                if (task.speedBps > 0 && !isPaused && !isError) {
+                val isDownloading = task.status == DownloadState.DOWNLOADING.name
+                if (isDownloading) {
+                    val displaySpeed = if (task.speedBps > 0) {
+                        "${FileUtils.formatBytes(task.speedBps)}/s"
+                    } else {
+                        "Descargando..."
+                    }
                     Box(
                         modifier = Modifier
                             .clip(RoundedCornerShape(12.dp))
@@ -1487,13 +1493,43 @@ fun ActiveTaskCard(
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             LottieEqualizerChunks(modifier = Modifier.size(width = 14.dp, height = 12.dp), reducedMotion = reducedMotion)
                             Text(
-                                text = "${FileUtils.formatBytes(task.speedBps)}/s",
+                                text = displaySpeed,
                                 fontFamily = DmSansFontFamily,
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = if (isDark) ElectricCyan else Color(0xFF007399)
                             )
                         }
+                    }
+                } else if (isPausing) {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(WarningAmber.copy(alpha = 0.15f))
+                            .padding(horizontal = 10.dp, vertical = 5.dp)
+                    ) {
+                        Text(
+                            text = "Pausando...",
+                            fontFamily = DmSansFontFamily,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = WarningAmber
+                        )
+                    }
+                } else if (isPaused) {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(WarningAmber.copy(alpha = 0.15f))
+                            .padding(horizontal = 10.dp, vertical = 5.dp)
+                    ) {
+                        Text(
+                            text = "Pausada",
+                            fontFamily = DmSansFontFamily,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = WarningAmber
+                        )
                     }
                 }
             }
@@ -1531,9 +1567,15 @@ fun ActiveTaskCard(
                         color = if (isError) ErrorRose else if (isPaused) WarningAmber else MaterialTheme.colorScheme.onSurface
                     )
 
-                    if (task.etaSeconds > 0 && !isPaused && !isError) {
+                    val etaText = when {
+                        isError || isPaused || isPausing -> null
+                        task.etaSeconds > 0 -> "~${FileUtils.formatDuration(task.etaSeconds)} restantes"
+                        task.totalBytes > 0 && task.downloadedBytes > 0 -> "Calculando..."
+                        else -> null
+                    }
+                    if (etaText != null) {
                         Text(
-                            text = "~${FileUtils.formatDuration(task.etaSeconds)} restantes",
+                            text = etaText,
                             fontFamily = DmSansFontFamily,
                             fontSize = 12.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
