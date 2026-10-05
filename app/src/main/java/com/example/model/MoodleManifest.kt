@@ -18,6 +18,7 @@ data class MoodleManifest(
 enum class DownloadState(val label: String) {
     QUEUED("En cola"),
     DOWNLOADING("Descargando"),
+    PAUSING("Pausando"),
     PAUSED("Pausada"),
     ERROR("Error"),
     COMPLETED("Completada"),
@@ -39,6 +40,7 @@ enum class DownloadState(val label: String) {
                 when (value.uppercase()) {
                     "EN_COLA", "PREPARING" -> QUEUED
                     "DESCARGANDO", "DOWNLOADING_PART", "REUSING_COMPLETED_PART", "RECONSTRUCTING" -> DOWNLOADING
+                    "PAUSANDO" -> PAUSING
                     "PAUSADA" -> PAUSED
                     "ERROR", "FAILED" -> ERROR
                     "COMPLETADA", "COMPLETED", "COMPLETED_WARN_HASH" -> COMPLETED

@@ -1,5 +1,6 @@
 package com.example
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -18,11 +19,18 @@ import com.example.ui.theme.MyApplicationTheme
 
 class MainActivity : ComponentActivity() {
 
+    companion object {
+        const val EXTRA_TARGET_TAB = "extra_target_tab"
+    }
+
     private val viewModel: DownloadViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
+        handleIntentTab(intent)
+
         setContent {
             val settings by viewModel.settings.collectAsStateWithLifecycle()
             val isDarkTheme = when (settings.themeMode) {
@@ -39,6 +47,19 @@ class MainActivity : ComponentActivity() {
                     MoodleDownloadScreen(viewModel = viewModel)
                 }
             }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIntentTab(intent)
+    }
+
+    private fun handleIntentTab(intent: Intent?) {
+        val targetTab = intent?.getIntExtra(EXTRA_TARGET_TAB, -1) ?: -1
+        if (targetTab >= 0) {
+            viewModel.selectTab(targetTab)
         }
     }
 }

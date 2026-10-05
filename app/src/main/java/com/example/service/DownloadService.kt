@@ -8,7 +8,6 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
-import android.media.AudioAttributes
 import android.media.RingtoneManager
 import android.net.ConnectivityManager
 import android.net.Network
@@ -20,15 +19,21 @@ import android.os.Build
 import android.os.Environment
 import android.os.IBinder
 import android.os.PowerManager
+import android.os.SystemClock
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import android.provider.MediaStore
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.example.MainActivity
+import com.example.data.AddDownloadBehavior
 import com.example.data.AppDatabase
 import com.example.data.DownloadEntity
+import com.example.data.QueueSortOrder
 import com.example.data.SettingsManager
+import com.example.data.SpeedLimit
+import com.example.model.ChunkPart
 import com.example.model.DownloadState
 import com.example.parser.MoodleCodeParser
 import com.example.util.FileUtils
@@ -41,8 +46,12 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import okhttp3.Call
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -51,15 +60,19 @@ import java.security.DigestOutputStream
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 class DownloadService : Service() {
 
     companion object {
+        const val TAG = "DownloadChunk"
+
         const val CHANNEL_PROGRESS_ID = "download_progress_channel"
         const val CHANNEL_COMPLETED_ID = "download_completed_channel"
         const val CHANNEL_ERROR_ID = "download_error_channel"
 
-        private const val NOTIFICATION_PROGRESS_ID = 1001
+        const val NOTIFICATION_GROUP_KEY = "com.example.downloadchunk.DOWNLOAD_GROUP"
+        const val NOTIFICATION_SUMMARY_ID = 1000
         private const val BUFFER_SIZE = 1024 * 512 // 512 KiB buffer
 
         const val ACTION_START = "com.example.service.ACTION_START"
@@ -67,55 +80,40 @@ class DownloadService : Service() {
         const val ACTION_RESUME = "com.example.service.ACTION_RESUME"
         const val ACTION_CANCEL = "com.example.service.ACTION_CANCEL"
         const val ACTION_RETRY = "com.example.service.ACTION_RETRY"
+        const val ACTION_PAUSE_ALL = "com.example.service.ACTION_PAUSE_ALL"
+        const val ACTION_RESUME_ALL = "com.example.service.ACTION_RESUME_ALL"
+        const val ACTION_CANCEL_ALL = "com.example.service.ACTION_CANCEL_ALL"
+        const val ACTION_MOVE_TO_TOP = "com.example.service.ACTION_MOVE_TO_TOP"
+        const val ACTION_FORCE_START = "com.example.service.ACTION_FORCE_START"
 
         const val EXTRA_DOWNLOAD_ID = "extra_download_id"
 
-        fun startDownload(context: Context, downloadId: String) {
+        fun startDownload(context: Context, downloadId: String) = sendServiceCommand(context, ACTION_START, downloadId)
+        fun pauseDownload(context: Context, downloadId: String) = sendServiceCommand(context, ACTION_PAUSE, downloadId)
+        fun resumeDownload(context: Context, downloadId: String) = sendServiceCommand(context, ACTION_RESUME, downloadId)
+        fun cancelDownload(context: Context, downloadId: String) = sendServiceCommand(context, ACTION_CANCEL, downloadId)
+        fun retryDownload(context: Context, downloadId: String) = sendServiceCommand(context, ACTION_RETRY, downloadId)
+        fun pauseAll(context: Context) = sendServiceCommand(context, ACTION_PAUSE_ALL, null)
+        fun resumeAll(context: Context) = sendServiceCommand(context, ACTION_RESUME_ALL, null)
+        fun cancelAll(context: Context) = sendServiceCommand(context, ACTION_CANCEL_ALL, null)
+        fun moveToTop(context: Context, downloadId: String) = sendServiceCommand(context, ACTION_MOVE_TO_TOP, downloadId)
+        fun forceStartNow(context: Context, downloadId: String) = sendServiceCommand(context, ACTION_FORCE_START, downloadId)
+
+        private fun sendServiceCommand(context: Context, action: String, downloadId: String?) {
+            Log.d(TAG, "sendServiceCommand: action=$action, downloadId=$downloadId")
             val intent = Intent(context, DownloadService::class.java).apply {
-                action = ACTION_START
-                putExtra(EXTRA_DOWNLOAD_ID, downloadId)
+                this.action = action
+                if (downloadId != null) putExtra(EXTRA_DOWNLOAD_ID, downloadId)
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                try {
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                     context.startForegroundService(intent)
-                } catch (_: Exception) {
+                } else {
                     context.startService(intent)
                 }
-            } else {
-                context.startService(intent)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to start service for $action: ${e.message}", e)
             }
-        }
-
-        fun pauseDownload(context: Context, downloadId: String) {
-            val intent = Intent(context, DownloadService::class.java).apply {
-                action = ACTION_PAUSE
-                putExtra(EXTRA_DOWNLOAD_ID, downloadId)
-            }
-            context.startService(intent)
-        }
-
-        fun resumeDownload(context: Context, downloadId: String) {
-            val intent = Intent(context, DownloadService::class.java).apply {
-                action = ACTION_RESUME
-                putExtra(EXTRA_DOWNLOAD_ID, downloadId)
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                try {
-                    context.startForegroundService(intent)
-                } catch (_: Exception) {
-                    context.startService(intent)
-                }
-            } else {
-                context.startService(intent)
-            }
-        }
-
-        fun cancelDownload(context: Context, downloadId: String) {
-            val intent = Intent(context, DownloadService::class.java).apply {
-                action = ACTION_CANCEL
-                putExtra(EXTRA_DOWNLOAD_ID, downloadId)
-            }
-            context.startService(intent)
         }
     }
 
@@ -127,7 +125,16 @@ class DownloadService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
 
+    // Sincronización y colas seguras
+    private val mutexMap = ConcurrentHashMap<String, Mutex>()
     private val activeJobs = ConcurrentHashMap<String, Job>()
+    private val activeCalls = ConcurrentHashMap<String, Call>()
+    private val pausingFlags = ConcurrentHashMap<String, AtomicBoolean>()
+
+    // Rate limiter para notificaciones (máximo 2 por segundo = 500ms entre actualizaciones)
+    private var lastNotificationUpdateTime = 0L
+    private val notificationUpdateMutex = Mutex()
+
     private val client: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(90, TimeUnit.SECONDS)
@@ -139,6 +146,7 @@ class DownloadService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        Log.d(TAG, "DownloadService onCreate")
         notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         database = AppDatabase.getDatabase(this)
         settingsManager = SettingsManager(this)
@@ -151,105 +159,291 @@ class DownloadService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val action = intent?.action ?: "DEFAULT_START"
         val downloadId = intent?.getStringExtra(EXTRA_DOWNLOAD_ID)
+        Log.d(TAG, "onStartCommand: action=$action, downloadId=$downloadId")
 
-        when (intent?.action) {
-            ACTION_START, ACTION_RESUME -> {
-                if (downloadId != null) {
-                    startOrResumeDownload(downloadId)
+        serviceScope.launch {
+            when (action) {
+                ACTION_START -> {
+                    if (downloadId != null) handleStartOrEnqueue(downloadId)
                 }
-            }
-            ACTION_PAUSE -> {
-                if (downloadId != null) {
-                    pauseDownloadInternal(downloadId)
+                ACTION_PAUSE -> {
+                    if (downloadId != null) handlePauseCommand(downloadId)
                 }
-            }
-            ACTION_CANCEL -> {
-                if (downloadId != null) {
-                    cancelDownloadInternal(downloadId)
+                ACTION_RESUME -> {
+                    if (downloadId != null) handleResumeCommand(downloadId)
                 }
-            }
-            ACTION_RETRY -> {
-                if (downloadId != null) {
-                    startOrResumeDownload(downloadId)
+                ACTION_CANCEL -> {
+                    if (downloadId != null) handleCancelCommand(downloadId)
                 }
-            }
-            else -> {
-                // Si el servicio se reinició por el sistema, retomar descargas activas en DB
-                checkAndResumePendingDownloads()
+                ACTION_RETRY -> {
+                    if (downloadId != null) handleRetryCommand(downloadId)
+                }
+                ACTION_PAUSE_ALL -> {
+                    handlePauseAllCommand()
+                }
+                ACTION_RESUME_ALL -> {
+                    handleResumeAllCommand()
+                }
+                ACTION_CANCEL_ALL -> {
+                    handleCancelAllCommand()
+                }
+                ACTION_MOVE_TO_TOP -> {
+                    if (downloadId != null) handleMoveToTopCommand(downloadId)
+                }
+                ACTION_FORCE_START -> {
+                    if (downloadId != null) handleForceStartCommand(downloadId)
+                }
+                else -> {
+                    // Restauración tras reinicio del servicio o del sistema
+                    restoreActiveDownloads()
+                }
             }
         }
 
         return START_STICKY
     }
 
-    private fun checkAndResumePendingDownloads() {
-        serviceScope.launch {
-            val unfinished = database.downloadDao().getUnfinishedDownloads()
-            for (item in unfinished) {
-                startOrResumeDownload(item.id)
+    private fun getMutex(id: String): Mutex = mutexMap.computeIfAbsent(id) { Mutex() }
+
+    private suspend fun handleStartOrEnqueue(downloadId: String) {
+        val mutex = getMutex(downloadId)
+        mutex.withLock {
+            val entity = database.downloadDao().getDownloadById(downloadId) ?: return
+            val settings = settingsManager.settings.value
+
+            if (settings.addDownloadBehavior == AddDownloadBehavior.ADD_TO_QUEUE_ONLY) {
+                Log.d(TAG, "Configured to add to queue only: $downloadId")
+                database.downloadDao().updateStatus(downloadId, DownloadState.QUEUED.name, null)
+                return
             }
-            if (unfinished.isEmpty()) {
-                stopSelfIfIdle()
+
+            processQueue()
+        }
+    }
+
+    private suspend fun handlePauseCommand(downloadId: String) {
+        val mutex = getMutex(downloadId)
+        mutex.withLock {
+            val entity = database.downloadDao().getDownloadById(downloadId) ?: return
+
+            // Ignorar órdenes inválidas
+            if (entity.status == DownloadState.PAUSED.name || entity.status == DownloadState.PAUSING.name) {
+                Log.d(TAG, "Ignoring pause: $downloadId already in state ${entity.status}")
+                return
+            }
+
+            Log.d(TAG, "Pausing download: $downloadId")
+            // 1. Estado "Pausando"
+            database.downloadDao().updateStatus(downloadId, DownloadState.PAUSING.name, null, pausedByNetwork = false)
+
+            // 2. Señalizar que termine la escritura en curso y cancelar la llamada HTTP
+            pausingFlags[downloadId]?.set(true)
+            activeCalls[downloadId]?.cancel()
+
+            // 3. Esperar que el trabajo activo termine ordenadamente de guardar en disco
+            val job = activeJobs.remove(downloadId)
+            job?.cancel()
+
+            // 4. Pasar a "Pausada" guardando los bytes descargados
+            database.downloadDao().updateStatus(downloadId, DownloadState.PAUSED.name, null, pausedByNetwork = false)
+            Log.d(TAG, "Transitioned to PAUSED: $downloadId")
+
+            releaseLocksIfIdle()
+            throttledUpdateNotifications()
+
+            // Una descarga pausada por el usuario NO ocupa lugar en el límite: arrancar la siguiente en cola
+            if (settingsManager.settings.value.autoStartNext) {
+                processQueue()
             }
         }
     }
 
-    private fun startOrResumeDownload(downloadId: String) {
-        if (activeJobs[downloadId]?.isActive == true) return
+    private suspend fun handleResumeCommand(downloadId: String) {
+        val mutex = getMutex(downloadId)
+        mutex.withLock {
+            val entity = database.downloadDao().getDownloadById(downloadId) ?: return
 
-        val job = serviceScope.launch {
-            val entity = database.downloadDao().getDownloadById(downloadId) ?: return@launch
-            val settings = settingsManager.settings.value
-
-            // Comprobación de Wi-Fi si wifiOnly está activo
-            if (settings.wifiOnly && !isWifiConnected()) {
-                database.downloadDao().updateStatus(downloadId, DownloadState.PAUSED.name, "Pausada: Solo con Wi-Fi está activado.")
-                updateNotification()
-                return@launch
+            if (entity.status == DownloadState.DOWNLOADING.name) {
+                Log.d(TAG, "Ignoring resume: $downloadId is already DOWNLOADING")
+                return
             }
 
-            acquireLocks()
-            startForegroundNotification(entity.fileName)
+            Log.d(TAG, "Resuming download: $downloadId")
+            // Mover a cola para que el procesador respete el límite de simultaneidad
+            database.downloadDao().updateStatus(downloadId, DownloadState.QUEUED.name, null, pausedByNetwork = false)
+            processQueue()
+        }
+    }
 
+    private suspend fun handleRetryCommand(downloadId: String) {
+        val mutex = getMutex(downloadId)
+        mutex.withLock {
+            Log.d(TAG, "Retrying download: $downloadId")
+            database.downloadDao().updateStatus(downloadId, DownloadState.QUEUED.name, null, pausedByNetwork = false)
+            processQueue()
+        }
+    }
+
+    private suspend fun handleCancelCommand(downloadId: String) {
+        val mutex = getMutex(downloadId)
+        mutex.withLock {
+            Log.d(TAG, "Cancelling download: $downloadId")
+            pausingFlags[downloadId]?.set(true)
+            activeCalls.remove(downloadId)?.cancel()
+            activeJobs.remove(downloadId)?.cancel()
+
+            database.downloadDao().updateStatus(downloadId, DownloadState.CANCELLED.name, null)
+
+            // Eliminar notificación individual
+            notificationManager.cancel(downloadId.hashCode())
+            releaseLocksIfIdle()
+            throttledUpdateNotifications()
+
+            if (settingsManager.settings.value.autoStartNext) {
+                processQueue()
+            }
+        }
+    }
+
+    private suspend fun handlePauseAllCommand() {
+        Log.d(TAG, "Pausing all active downloads")
+        val downloading = database.downloadDao().getCurrentlyDownloading()
+        for (item in downloading) {
+            handlePauseCommand(item.id)
+        }
+    }
+
+    private suspend fun handleResumeAllCommand() {
+        Log.d(TAG, "Resuming all paused downloads")
+        val dao = database.downloadDao()
+        val paused = dao.getAllDownloads()
+        // Poner en cola todas las pausadas
+        val unstarted = dao.getUnfinishedDownloads()
+        for (item in unstarted) {
+            if (item.status == DownloadState.PAUSED.name || item.status == DownloadState.ERROR.name) {
+                dao.updateStatus(item.id, DownloadState.QUEUED.name, null, pausedByNetwork = false)
+            }
+        }
+        processQueue()
+    }
+
+    private suspend fun handleCancelAllCommand() {
+        Log.d(TAG, "Cancelling all active and queued downloads")
+        val unstarted = database.downloadDao().getUnfinishedDownloads()
+        for (item in unstarted) {
+            handleCancelCommand(item.id)
+        }
+        notificationManager.cancel(NOTIFICATION_SUMMARY_ID)
+    }
+
+    private suspend fun handleMoveToTopCommand(downloadId: String) {
+        val dao = database.downloadDao()
+        val queued = dao.getQueuedDownloads()
+        var pos = 1
+        dao.updateQueuePosition(downloadId, 0)
+        for (item in queued) {
+            if (item.id != downloadId) {
+                dao.updateQueuePosition(item.id, pos++)
+            }
+        }
+        Log.d(TAG, "Moved $downloadId to top of queue")
+    }
+
+    private suspend fun handleForceStartCommand(downloadId: String) {
+        val settings = settingsManager.settings.value
+        val maxLimit = settings.maxConcurrentDownloads
+        val currentRunning = database.downloadDao().getCurrentlyDownloading()
+
+        // Si se supera el límite, pausar la más reciente
+        if (currentRunning.size >= maxLimit && currentRunning.isNotEmpty()) {
+            val mostRecent = currentRunning.maxByOrNull { it.createdAt }
+            if (mostRecent != null && mostRecent.id != downloadId) {
+                Log.d(TAG, "Force start: pausing most recent ${mostRecent.id} to make room")
+                handlePauseCommand(mostRecent.id)
+            }
+        }
+
+        startExecution(downloadId)
+    }
+
+    /**
+     * Procesador central de la cola de descargas respetando el límite de simultaneidad.
+     */
+    private suspend fun processQueue() {
+        val settings = settingsManager.settings.value
+        val maxLimit = settings.maxConcurrentDownloads
+
+        val activeCount = activeJobs.size
+        val availableSlots = maxLimit - activeCount
+
+        Log.d(TAG, "processQueue: activeCount=$activeCount, maxLimit=$maxLimit, availableSlots=$availableSlots")
+
+        if (availableSlots <= 0) {
+            throttledUpdateNotifications()
+            return
+        }
+
+        var queuedList = database.downloadDao().getQueuedDownloads()
+
+        // Orden de la cola
+        queuedList = when (settings.queueSortOrder) {
+            QueueSortOrder.FIFO -> queuedList.sortedWith(compareBy({ it.queuePosition }, { it.createdAt }))
+            QueueSortOrder.SMALLEST_FIRST -> queuedList.sortedWith(compareBy({ it.queuePosition }, { it.totalBytes }))
+        }
+
+        val toStart = queuedList.take(availableSlots)
+        for (item in toStart) {
+            startExecution(item.id)
+        }
+
+        throttledUpdateNotifications()
+    }
+
+    private suspend fun startExecution(downloadId: String) {
+        if (activeJobs[downloadId]?.isActive == true) return
+
+        val entity = database.downloadDao().getDownloadById(downloadId) ?: return
+        val settings = settingsManager.settings.value
+
+        if (settings.wifiOnly && !isWifiConnected()) {
+            Log.d(TAG, "Wi-Fi only enabled but no Wi-Fi: pausing $downloadId")
+            database.downloadDao().updateStatus(downloadId, DownloadState.PAUSED.name, "Pausada: Solo con Wi-Fi está activado.", pausedByNetwork = true)
+            throttledUpdateNotifications()
+            return
+        }
+
+        acquireLocks()
+        pausingFlags[downloadId] = AtomicBoolean(false)
+        database.downloadDao().updateStatus(downloadId, DownloadState.DOWNLOADING.name, null, pausedByNetwork = false)
+
+        val job = serviceScope.launch {
             try {
-                database.downloadDao().updateStatus(downloadId, DownloadState.DOWNLOADING.name, null)
+                Log.d(TAG, "Starting download pipeline for $downloadId (${entity.fileName})")
                 executeDownloadPipeline(entity)
             } catch (e: CancellationException) {
-                // Cancelado o pausado explícitamente
+                Log.d(TAG, "Download pipeline cancelled for $downloadId")
             } catch (e: Exception) {
+                Log.e(TAG, "Error in download pipeline for $downloadId: ${e.message}", e)
                 handleDownloadError(downloadId, e)
             } finally {
                 activeJobs.remove(downloadId)
+                activeCalls.remove(downloadId)
+                pausingFlags.remove(downloadId)
                 releaseLocksIfIdle()
-                updateNotification()
+                throttledUpdateNotifications()
+
+                // Arrancar siguiente en cola
+                if (settingsManager.settings.value.autoStartNext) {
+                    processQueue()
+                }
                 stopSelfIfIdle()
             }
         }
 
         activeJobs[downloadId] = job
-    }
-
-    private fun pauseDownloadInternal(downloadId: String) {
-        val job = activeJobs.remove(downloadId)
-        job?.cancel()
-        serviceScope.launch {
-            database.downloadDao().updateStatus(downloadId, DownloadState.PAUSED.name, null)
-            releaseLocksIfIdle()
-            updateNotification()
-            stopSelfIfIdle()
-        }
-    }
-
-    private fun cancelDownloadInternal(downloadId: String) {
-        val job = activeJobs.remove(downloadId)
-        job?.cancel()
-        serviceScope.launch {
-            database.downloadDao().updateStatus(downloadId, DownloadState.CANCELLED.name, null)
-            releaseLocksIfIdle()
-            updateNotification()
-            stopSelfIfIdle()
-        }
+        throttledUpdateNotifications()
     }
 
     private suspend fun executeDownloadPipeline(entity: DownloadEntity) {
@@ -264,9 +458,7 @@ class DownloadService : Service() {
         val manifest = parseResult.manifest
         val codeFingerprint = MoodleCodeParser.getCodeFingerprint(entity.code)
         val partsDirectory = File(filesDir, "chunks_$codeFingerprint")
-        if (!partsDirectory.exists()) {
-            partsDirectory.mkdirs()
-        }
+        if (!partsDirectory.exists()) partsDirectory.mkdirs()
 
         val orderedParts = manifest.parts
         val totalParts = orderedParts.size
@@ -275,13 +467,14 @@ class DownloadService : Service() {
         var lastSpeedCalcTime = System.currentTimeMillis()
         var lastBytesForSpeed = entity.downloadedBytes
 
-        // Descarga de partes con HTTP Range para reanudar exactamente donde se quedó
         for ((idx, part) in orderedParts.withIndex()) {
+            if (!coroutineScopeIsActive()) break
+            if (pausingFlags[entity.id]?.get() == true) break
+
             val partFile = File(partsDirectory, "%05d.part".format(part.index))
             val tempFile = File(partsDirectory, "%05d.tmp".format(part.index))
 
             if (partFile.exists() && partFile.length() > 0L) {
-                // Parte ya completada
                 val completedCount = idx + 1
                 val downloadedSoFar = calculateDownloadedBytes(partsDirectory, orderedParts, part.index)
                 database.downloadDao().updateProgress(
@@ -296,8 +489,9 @@ class DownloadService : Service() {
                 continue
             }
 
-            // Descargar parte con reanudación HTTP Range
+            // Descarga de la parte con HTTP Range
             downloadPartWithRange(
+                downloadId = entity.id,
                 partUrl = part.url,
                 tempFile = tempFile,
                 partFile = partFile,
@@ -332,11 +526,16 @@ class DownloadService : Service() {
                         )
                     }
 
-                    updateProgressNotification(entity.fileName, downloadedTotal, totalManifestSize, speed, part.index, totalParts, entity.id)
+                    throttledUpdateNotifications()
                 }
             )
 
-            // Parte terminada
+            if (pausingFlags[entity.id]?.get() == true) {
+                Log.d(TAG, "Pause detected after part ${part.index} completed or stopped.")
+                break
+            }
+
+            // Parte completada
             val completedCount = idx + 1
             val downloadedSoFar = calculateDownloadedBytes(partsDirectory, orderedParts, part.index)
             database.downloadDao().updateProgress(
@@ -350,14 +549,19 @@ class DownloadService : Service() {
             )
         }
 
+        // Si se pausó durante el bucle, no ensamblar todavía
+        if (pausingFlags[entity.id]?.get() == true) {
+            Log.d(TAG, "Pipeline paused before assembly: $entity.id")
+            return
+        }
+
         // Reconstrucción del archivo uniendo físicamente las partes
         val mediaStoreUri = assembleFinalFile(partsDirectory, orderedParts, entity.fileName)
 
-        // Limpieza de partes temporales
+        // Limpieza de partes temporales completadas
         partsDirectory.listFiles()?.forEach { it.delete() }
         partsDirectory.delete()
 
-        // Notificación de éxito
         val completedAt = System.currentTimeMillis()
         database.downloadDao().markCompleted(
             id = entity.id,
@@ -369,10 +573,14 @@ class DownloadService : Service() {
             completedAt = completedAt
         )
 
+        Log.d(TAG, "Download completed: ${entity.fileName}")
+        // Reemplaza la notificación de progreso por la de éxito
+        notificationManager.cancel(entity.id.hashCode())
         showCompletedNotification(entity.fileName, mediaStoreUri)
     }
 
     private fun downloadPartWithRange(
+        downloadId: String,
         partUrl: String,
         tempFile: File,
         partFile: File,
@@ -386,14 +594,25 @@ class DownloadService : Service() {
         }
 
         val request = requestBuilder.build()
-        val response = client.newCall(request).execute()
+        val call = client.newCall(request)
+        activeCalls[downloadId] = call
+
+        val response: Response
+        try {
+            response = call.execute()
+        } catch (e: IOException) {
+            if (pausingFlags[downloadId]?.get() == true) {
+                // Cancelación voluntaria por pausa
+                return
+            }
+            throw e
+        }
 
         if (!response.isSuccessful && response.code != 416) {
             response.close()
-            throw IOException("Error del servidor HTTP ${response.code} descargando fragmento.")
+            throw IOException("Error HTTP ${response.code} descargando fragmento.")
         }
 
-        // Si el servidor responde 416 (Range Not Satisfiable), el archivo temporal ya estaba completo o es inválido
         if (response.code == 416) {
             response.close()
             if (tempFile.exists()) {
@@ -406,29 +625,66 @@ class DownloadService : Service() {
         val body = response.body ?: throw IOException("Cuerpo de respuesta vacío.")
 
         var totalWritten = if (isAppend) existingBytes else 0L
+        val speedLimitBps = settingsManager.settings.value.speedLimit.bytesPerSec
 
-        body.byteStream().use { input ->
-            FileOutputStream(tempFile, isAppend).use { output ->
-                val buffer = ByteArray(BUFFER_SIZE)
-                var read: Int
-                while (input.read(buffer).also { read = it } != -1) {
-                    output.write(buffer, 0, read)
-                    totalWritten += read
-                    onProgress(totalWritten)
+        var throttleStartTime = System.currentTimeMillis()
+        var bytesWrittenInWindow = 0L
+
+        try {
+            body.byteStream().use { input ->
+                FileOutputStream(tempFile, isAppend).use { output ->
+                    val buffer = ByteArray(BUFFER_SIZE)
+                    var read: Int
+
+                    while (input.read(buffer).also { read = it } != -1) {
+                        // Si llega orden de pausa, terminar de escribir el buffer actual y hacer flush antes de salir
+                        if (pausingFlags[downloadId]?.get() == true) {
+                            output.write(buffer, 0, read)
+                            totalWritten += read
+                            output.flush()
+                            Log.d(TAG, "Flushed and paused chunk cleanly: totalWritten=$totalWritten")
+                            break
+                        }
+
+                        output.write(buffer, 0, read)
+                        totalWritten += read
+                        bytesWrittenInWindow += read
+                        onProgress(totalWritten)
+
+                        // Límite de velocidad si está configurado
+                        if (speedLimitBps > 0) {
+                            val elapsedMs = System.currentTimeMillis() - throttleStartTime
+                            val expectedMs = (bytesWrittenInWindow * 1000L) / speedLimitBps
+                            if (expectedMs > elapsedMs) {
+                                val sleepMs = expectedMs - elapsedMs
+                                if (sleepMs > 0 && sleepMs < 1000L) {
+                                    SystemClock.sleep(sleepMs)
+                                }
+                            }
+                            if (elapsedMs >= 1000L) {
+                                throttleStartTime = System.currentTimeMillis()
+                                bytesWrittenInWindow = 0L
+                            }
+                        }
+                    }
+                    output.flush()
                 }
-                output.flush()
             }
+        } finally {
+            response.close()
+            activeCalls.remove(downloadId)
         }
-        response.close()
 
-        // Renombrar a archivo de parte permanente
-        if (partFile.exists()) partFile.delete()
-        tempFile.renameTo(partFile)
+        // Si no se pausó y terminó de descargarse la parte completa, renombrar a .part
+        if (pausingFlags[downloadId]?.get() != true) {
+            if (partFile.exists()) partFile.delete()
+            tempFile.renameTo(partFile)
+        }
     }
 
     private fun assembleFinalFile(
         partsDirectory: File,
-        orderedParts: List<com.example.model.ChunkPart>,
+        orderedParts: List<ChunkPart>,
         fileName: String
     ): Uri {
         val resolver = contentResolver
@@ -465,7 +721,6 @@ class DownloadService : Service() {
             digestOut.flush()
         } ?: throw IOException("No se pudo escribir en el destino final.")
 
-        // Publicar archivo
         contentValues.clear()
         contentValues.put(MediaStore.MediaColumns.IS_PENDING, 0)
         resolver.update(uri, contentValues, null, null)
@@ -475,7 +730,7 @@ class DownloadService : Service() {
 
     private fun calculateDownloadedBytes(
         partsDirectory: File,
-        orderedParts: List<com.example.model.ChunkPart>,
+        orderedParts: List<ChunkPart>,
         upToPartIndex: Int
     ): Long {
         var sum = 0L
@@ -500,13 +755,15 @@ class DownloadService : Service() {
                     database.downloadDao().updateStatus(
                         downloadId,
                         DownloadState.PAUSED.name,
-                        "Red interrumpida. Reintentando automáticamente al volver la conexión..."
+                        "Red interrumpida. Esperando conexión...",
+                        pausedByNetwork = true
                     )
                 } else {
                     database.downloadDao().updateStatus(
                         downloadId,
                         DownloadState.PAUSED.name,
-                        "Descarga pausada por pérdida de red."
+                        "Descarga pausada por pérdida de red.",
+                        pausedByNetwork = true
                     )
                 }
             } else {
@@ -514,41 +771,46 @@ class DownloadService : Service() {
                 database.downloadDao().markFailed(downloadId, DownloadState.ERROR.name, msg, System.currentTimeMillis())
                 showErrorNotification(downloadId, "Descarga fallida", msg)
             }
+            throttledUpdateNotifications()
         }
     }
 
     private fun registerNetworkCallback() {
         val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
-        val builder = NetworkRequest.Builder()
-            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        val builder = NetworkRequest.Builder().addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
 
         networkCallback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
+                Log.d(TAG, "Network available")
                 val settings = settingsManager.settings.value
                 if (settings.autoRetry) {
                     serviceScope.launch {
-                        delay(1200) // Pequeña espera para estabilización del socket
+                        delay(1200)
                         val pending = database.downloadDao().getUnfinishedDownloads()
                         for (item in pending) {
-                            if (item.status == DownloadState.PAUSED.name && item.errorMessage?.contains("red", ignoreCase = true) == true) {
-                                startOrResumeDownload(item.id)
+                            if (item.pausedByNetwork) {
+                                Log.d(TAG, "Auto-resuming network-paused download: ${item.id}")
+                                database.downloadDao().updateStatus(item.id, DownloadState.QUEUED.name, null, pausedByNetwork = false)
                             }
                         }
+                        processQueue()
                     }
                 }
             }
 
             override fun onLost(network: Network) {
-                // Pausar descargas activas sin perder las partes
-                for ((id, job) in activeJobs) {
-                    job.cancel()
-                    serviceScope.launch {
-                        database.downloadDao().updateStatus(id, DownloadState.PAUSED.name, "Sin conexión a internet.")
+                Log.d(TAG, "Network lost: pausing active downloads with pausedByNetwork=true")
+                serviceScope.launch {
+                    val active = database.downloadDao().getCurrentlyDownloading()
+                    for (item in active) {
+                        pausingFlags[item.id]?.set(true)
+                        activeCalls[item.id]?.cancel()
+                        activeJobs.remove(item.id)?.cancel()
+                        database.downloadDao().updateStatus(item.id, DownloadState.PAUSED.name, "Sin conexión a internet.", pausedByNetwork = true)
                     }
+                    releaseLocksIfIdle()
+                    throttledUpdateNotifications()
                 }
-                activeJobs.clear()
-                releaseLocksIfIdle()
-                updateNotification()
             }
         }
 
@@ -569,6 +831,19 @@ class DownloadService : Service() {
         val network = cm.activeNetwork ?: return false
         val caps = cm.getNetworkCapabilities(network) ?: return false
         return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+    }
+
+    private fun restoreActiveDownloads() {
+        serviceScope.launch {
+            val unfinished = database.downloadDao().getUnfinishedDownloads()
+            for (item in unfinished) {
+                // Las que estaban descargando vuelven a la cola respetando el límite
+                if (item.status == DownloadState.DOWNLOADING.name || item.status == DownloadState.PAUSING.name) {
+                    database.downloadDao().updateStatus(item.id, DownloadState.QUEUED.name, null, pausedByNetwork = false)
+                }
+            }
+            processQueue()
+        }
     }
 
     private fun initLocks() {
@@ -597,131 +872,183 @@ class DownloadService : Service() {
         }
     }
 
-    private fun startForegroundNotification(title: String) {
-        val notification = buildProgressNotification(
-            title = title,
-            content = "Iniciando descarga...",
-            progress = 0,
-            speed = 0L,
-            downloadId = null,
-            isPaused = false
-        )
-
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                startForeground(
-                    NOTIFICATION_PROGRESS_ID,
-                    notification,
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
-                )
-            } else {
-                startForeground(NOTIFICATION_PROGRESS_ID, notification)
+    /**
+     * Limita la actualización de notificaciones a máximo 2 por segundo (500ms)
+     */
+    private fun throttledUpdateNotifications() {
+        serviceScope.launch {
+            notificationUpdateMutex.withLock {
+                val now = SystemClock.elapsedRealtime()
+                if (now - lastNotificationUpdateTime < 500L) {
+                    return@withLock
+                }
+                lastNotificationUpdateTime = now
+                updateNotificationsInternal()
             }
-        } catch (_: Exception) {}
-    }
-
-    private fun updateProgressNotification(
-        fileName: String,
-        downloaded: Long,
-        total: Long,
-        speed: Long,
-        partIndex: Int,
-        totalParts: Int,
-        downloadId: String
-    ) {
-        if (!settingsManager.settings.value.showProgressNotifications) return
-
-        val percent = if (total > 0) ((downloaded * 100) / total).toInt().coerceIn(0, 99) else 0
-        val speedStr = if (speed > 0) " • ${FileUtils.formatBytes(speed)}/s" else ""
-        val content = "Parte $partIndex de $totalParts • $percent%$speedStr"
-
-        val notification = buildProgressNotification(
-            title = fileName,
-            content = content,
-            progress = percent,
-            speed = speed,
-            downloadId = downloadId,
-            isPaused = false
-        )
-
-        try {
-            notificationManager.notify(NOTIFICATION_PROGRESS_ID, notification)
-        } catch (_: Exception) {}
-    }
-
-    private fun updateNotification() {
-        if (activeJobs.isEmpty()) {
-            try {
-                notificationManager.cancel(NOTIFICATION_PROGRESS_ID)
-            } catch (_: Exception) {}
         }
     }
 
-    private fun buildProgressNotification(
-        title: String,
-        content: String,
-        progress: Int,
-        speed: Long,
-        downloadId: String?,
-        isPaused: Boolean
+    private suspend fun updateNotificationsInternal() {
+        val settings = settingsManager.settings.value
+        if (!settings.showProgressNotifications) {
+            notificationManager.cancel(NOTIFICATION_SUMMARY_ID)
+            return
+        }
+
+        val activeList = database.downloadDao().getCurrentlyDownloading()
+        val queuedList = database.downloadDao().getQueuedDownloads()
+        val pausedList = database.downloadDao().getUnfinishedDownloads().filter { it.status == DownloadState.PAUSED.name }
+
+        val totalActive = activeList.size
+        val totalQueued = queuedList.size
+
+        if (totalActive == 0 && totalQueued == 0 && pausedList.isEmpty()) {
+            notificationManager.cancel(NOTIFICATION_SUMMARY_ID)
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            return
+        }
+
+        // 1. Notificación de Resumen agrupada (Foreground)
+        val summaryNotification = buildSummaryNotification(totalActive, totalQueued, activeList)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(NOTIFICATION_SUMMARY_ID, summaryNotification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+            } else {
+                startForeground(NOTIFICATION_SUMMARY_ID, summaryNotification)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed startForeground: ${e.message}")
+        }
+
+        // 2. Notificaciones hijas para cada descarga activa o pausada
+        for (item in activeList) {
+            val childNotif = buildChildNotification(item, isPaused = false)
+            notificationManager.notify(item.id.hashCode(), childNotif)
+        }
+
+        for (item in pausedList) {
+            val childNotif = buildChildNotification(item, isPaused = true)
+            notificationManager.notify(item.id.hashCode(), childNotif)
+        }
+    }
+
+    private fun buildSummaryNotification(
+        activeCount: Int,
+        queuedCount: Int,
+        activeList: List<DownloadEntity>
     ): Notification {
-        val contentIntent = PendingIntent.getActivity(
-            this,
-            0,
-            Intent(this, MainActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
-            },
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        )
+        val contentIntent = createOpenAppPendingIntent()
+
+        val summaryTitle = if (activeCount > 0 && queuedCount > 0) {
+            "$activeCount descargas activas · $queuedCount en cola"
+        } else if (activeCount > 0) {
+            "$activeCount descargas activas"
+        } else {
+            "$queuedCount descargas en cola"
+        }
+
+        var totalBytes = 0L
+        var downloadedBytes = 0L
+        for (item in activeList) {
+            totalBytes += item.totalBytes
+            downloadedBytes += item.downloadedBytes
+        }
+        val percent = if (totalBytes > 0) ((downloadedBytes * 100) / totalBytes).toInt().coerceIn(0, 99) else 0
 
         val builder = NotificationCompat.Builder(this, CHANNEL_PROGRESS_ID)
-            .setContentTitle(title)
-            .setContentText(content)
+            .setContentTitle(summaryTitle)
+            .setContentText(if (activeCount > 0) "$percent% completado" else "En espera de turno")
             .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setGroup(NOTIFICATION_GROUP_KEY)
+            .setGroupSummary(true)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setContentIntent(contentIntent)
-            .setProgress(100, progress, progress == 0)
             .setPriority(NotificationCompat.PRIORITY_LOW)
 
-        if (downloadId != null) {
-            if (isPaused) {
-                val resumeIntent = PendingIntent.getService(
-                    this,
-                    downloadId.hashCode() + 1,
-                    Intent(this, DownloadService::class.java).apply {
-                        action = ACTION_RESUME
-                        putExtra(EXTRA_DOWNLOAD_ID, downloadId)
-                    },
-                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-                )
-                builder.addAction(android.R.drawable.ic_media_play, "Reanudar", resumeIntent)
-            } else {
-                val pauseIntent = PendingIntent.getService(
-                    this,
-                    downloadId.hashCode() + 2,
-                    Intent(this, DownloadService::class.java).apply {
-                        action = ACTION_PAUSE
-                        putExtra(EXTRA_DOWNLOAD_ID, downloadId)
-                    },
-                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-                )
-                builder.addAction(android.R.drawable.ic_media_pause, "Pausar", pauseIntent)
-            }
+        if (activeCount > 0) {
+            builder.setProgress(100, percent, false)
 
-            val cancelIntent = PendingIntent.getService(
-                this,
-                downloadId.hashCode() + 3,
-                Intent(this, DownloadService::class.java).apply {
-                    action = ACTION_CANCEL
-                    putExtra(EXTRA_DOWNLOAD_ID, downloadId)
-                },
-                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-            )
-            builder.addAction(android.R.drawable.ic_menu_close_clear_cancel, "Cancelar", cancelIntent)
+            val pauseAllIntent = createActionPendingIntent(ACTION_PAUSE_ALL, null, 9001)
+            builder.addAction(android.R.drawable.ic_media_pause, "Pausar todo", pauseAllIntent)
         }
 
+        val cancelAllIntent = createActionPendingIntent(ACTION_CANCEL_ALL, null, 9002)
+        builder.addAction(android.R.drawable.ic_menu_close_clear_cancel, "Cancelar todo", cancelAllIntent)
+
         return builder.build()
+    }
+
+    private fun buildChildNotification(
+        item: DownloadEntity,
+        isPaused: Boolean
+    ): Notification {
+        val contentIntent = createOpenAppPendingIntent()
+
+        val percent = if (item.totalBytes > 0) {
+            ((item.downloadedBytes * 100) / item.totalBytes).toInt().coerceIn(0, 99)
+        } else 0
+
+        val speedStr = if (item.speedBps > 0 && !isPaused) " • ${FileUtils.formatBytes(item.speedBps)}/s" else ""
+        val contentText = if (isPaused) {
+            "En pausa • $percent%"
+        } else {
+            "Parte ${item.currentPart} de ${item.totalParts} • $percent%$speedStr"
+        }
+
+        val builder = NotificationCompat.Builder(this, CHANNEL_PROGRESS_ID)
+            .setContentTitle(item.fileName)
+            .setContentText(contentText)
+            .setSmallIcon(if (isPaused) android.R.drawable.ic_media_pause else android.R.drawable.stat_sys_download)
+            .setGroup(NOTIFICATION_GROUP_KEY)
+            .setOngoing(!isPaused)
+            .setOnlyAlertOnce(true)
+            .setContentIntent(contentIntent)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+
+        if (!isPaused) {
+            builder.setProgress(100, percent, percent == 0)
+            val pauseIntent = createActionPendingIntent(ACTION_PAUSE, item.id, item.id.hashCode() + 10)
+            builder.addAction(android.R.drawable.ic_media_pause, "Pausar", pauseIntent)
+        } else {
+            val resumeIntent = createActionPendingIntent(ACTION_RESUME, item.id, item.id.hashCode() + 20)
+            builder.addAction(android.R.drawable.ic_media_play, "Reanudar", resumeIntent)
+        }
+
+        val cancelIntent = createActionPendingIntent(ACTION_CANCEL, item.id, item.id.hashCode() + 30)
+        builder.addAction(android.R.drawable.ic_menu_close_clear_cancel, "Cancelar", cancelIntent)
+
+        return builder.build()
+    }
+
+    private fun createOpenAppPendingIntent(): PendingIntent {
+        val intent = Intent(this, MainActivity::class.java).apply {
+            action = Intent.ACTION_MAIN
+            addCategory(Intent.CATEGORY_LAUNCHER)
+            putExtra(MainActivity.EXTRA_TARGET_TAB, 1) // Abrir en la pestaña "En curso"
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        return PendingIntent.getActivity(
+            this,
+            500,
+            intent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+    }
+
+    private fun createActionPendingIntent(action: String, downloadId: String?, requestCode: Int): PendingIntent {
+        val intent = Intent(this, DownloadActionReceiver::class.java).apply {
+            this.action = action
+            if (downloadId != null) {
+                putExtra(DownloadActionReceiver.EXTRA_DOWNLOAD_ID, downloadId)
+            }
+        }
+        return PendingIntent.getBroadcast(
+            this,
+            requestCode,
+            intent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
     }
 
     private fun showCompletedNotification(fileName: String, uri: Uri) {
@@ -756,7 +1083,7 @@ class DownloadService : Service() {
         }
 
         try {
-            notificationManager.notify(fileName.hashCode(), builder.build())
+            notificationManager.notify(fileName.hashCode() + 500, builder.build())
         } catch (_: Exception) {}
 
         if (settings.vibrateOnComplete) {
@@ -765,15 +1092,7 @@ class DownloadService : Service() {
     }
 
     private fun showErrorNotification(downloadId: String, fileName: String, errorMsg: String) {
-        val retryIntent = PendingIntent.getService(
-            this,
-            downloadId.hashCode() + 4,
-            Intent(this, DownloadService::class.java).apply {
-                action = ACTION_RETRY
-                putExtra(EXTRA_DOWNLOAD_ID, downloadId)
-            },
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        )
+        val retryIntent = createActionPendingIntent(ACTION_RETRY, downloadId, downloadId.hashCode() + 40)
 
         val builder = NotificationCompat.Builder(this, CHANNEL_ERROR_ID)
             .setContentTitle("Fallo en descarga: $fileName")
@@ -784,7 +1103,7 @@ class DownloadService : Service() {
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
 
         try {
-            notificationManager.notify(downloadId.hashCode() + 10, builder.build())
+            notificationManager.notify(downloadId.hashCode() + 600, builder.build())
         } catch (_: Exception) {}
     }
 
@@ -808,9 +1127,10 @@ class DownloadService : Service() {
         }
     }
 
+    private fun coroutineScopeIsActive(): Boolean = serviceScope.isActive
+
     private fun createNotificationChannels() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            // Canal 1: Progreso (Baja prioridad, sin sonido)
             val progressChannel = NotificationChannel(
                 CHANNEL_PROGRESS_ID,
                 "Descargas",
@@ -822,7 +1142,6 @@ class DownloadService : Service() {
                 setShowBadge(false)
             }
 
-            // Canal 2: Completadas (Alta prioridad, con sonido)
             val completedChannel = NotificationChannel(
                 CHANNEL_COMPLETED_ID,
                 "Completadas",
@@ -833,7 +1152,6 @@ class DownloadService : Service() {
                 setShowBadge(true)
             }
 
-            // Canal 3: Errores (Prioridad por defecto)
             val errorChannel = NotificationChannel(
                 CHANNEL_ERROR_ID,
                 "Errores",
@@ -848,6 +1166,7 @@ class DownloadService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        Log.d(TAG, "DownloadService onDestroy")
         serviceScope.cancel()
         networkCallback?.let {
             val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager

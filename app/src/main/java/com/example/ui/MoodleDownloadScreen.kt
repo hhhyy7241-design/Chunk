@@ -48,9 +48,13 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Android
+import androidx.compose.material.icons.filled.ArrowDownward
+import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.BatteryChargingFull
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
@@ -63,8 +67,10 @@ import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderZip
+import androidx.compose.material.icons.filled.HourglassEmpty
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.LightMode
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
@@ -74,6 +80,7 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SettingsBrightness
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Vibration
 import androidx.compose.material.icons.filled.VideoFile
 import androidx.compose.material.icons.filled.VolumeUp
@@ -84,6 +91,8 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -94,8 +103,10 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
@@ -126,8 +137,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.data.AddDownloadBehavior
 import com.example.data.AppSettings
 import com.example.data.DownloadEntity
+import com.example.data.QueueSortOrder
+import com.example.data.SpeedLimit
 import com.example.data.ThemeMode
 import com.example.model.DownloadState
 import com.example.model.MoodleManifest
@@ -141,9 +155,7 @@ import com.example.ui.theme.ElectricCyan
 import com.example.ui.theme.ErrorRose
 import com.example.ui.theme.SuccessGreen
 import com.example.ui.theme.WarningAmber
-import com.example.util.BatteryUtils
 import com.example.util.FileUtils
-import com.example.util.ManufacturerUtils
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
@@ -158,21 +170,37 @@ fun MoodleDownloadScreen(
     val scope = rememberCoroutineScope()
     val isDark = isSystemInDarkTheme()
 
+    val selectedTab by viewModel.selectedTab.collectAsStateWithLifecycle()
     val codeText by viewModel.codeText.collectAsStateWithLifecycle()
     val parseState by viewModel.parseState.collectAsStateWithLifecycle()
-    val activeDownloads by viewModel.activeDownloads.collectAsStateWithLifecycle()
+
+    val downloadingDownloads by viewModel.downloadingDownloads.collectAsStateWithLifecycle()
+    val queuedDownloads by viewModel.queuedDownloads.collectAsStateWithLifecycle()
+    val pausedDownloads by viewModel.pausedDownloads.collectAsStateWithLifecycle()
     val completedDownloads by viewModel.completedDownloads.collectAsStateWithLifecycle()
+    val activeDownloads by viewModel.activeDownloads.collectAsStateWithLifecycle()
+
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val showWelcomeSheet by viewModel.showWelcomeSheet.collectAsStateWithLifecycle()
 
-    var selectedTab by remember { mutableIntStateOf(0) }
     var showSettingsSheet by remember { mutableStateOf(false) }
-
     val activeListState = rememberLazyListState()
 
+    // Manejo de eventos de snackbar con botón "Ver"
     LaunchedEffect(Unit) {
-        viewModel.snackbarMessage.collectLatest { msg ->
-            snackbarHostState.showSnackbar(msg)
+        viewModel.snackbarEvent.collectLatest { event ->
+            if (event.actionLabel != null) {
+                val result = snackbarHostState.showSnackbar(
+                    message = event.message,
+                    actionLabel = event.actionLabel,
+                    duration = SnackbarDuration.Short
+                )
+                if (result == SnackbarResult.ActionPerformed) {
+                    viewModel.selectTab(event.targetTab)
+                }
+            } else {
+                snackbarHostState.showSnackbar(event.message)
+            }
         }
     }
 
@@ -185,9 +213,9 @@ fun MoodleDownloadScreen(
         topBar = {
             TopAppBar(
                 onOpenCompleted = {
-                    selectedTab = 1
+                    viewModel.selectTab(1)
                     scope.launch {
-                        val targetIndex = if (activeDownloads.isEmpty()) 0 else activeDownloads.size + 1
+                        val targetIndex = (downloadingDownloads.size + queuedDownloads.size + pausedDownloads.size).coerceAtLeast(0) + 1
                         activeListState.animateScrollToItem(targetIndex)
                     }
                 },
@@ -198,7 +226,7 @@ fun MoodleDownloadScreen(
             FloatingPillNavigationBar(
                 selectedIndex = selectedTab,
                 activeCount = activeDownloads.size,
-                onSelect = { selectedTab = it },
+                onSelect = { viewModel.selectTab(it) },
                 modifier = Modifier
                     .fillMaxWidth()
                     .navigationBarsPadding()
@@ -217,23 +245,29 @@ fun MoodleDownloadScreen(
                 0 -> DownloadInputTab(
                     codeText = codeText,
                     parseState = parseState,
+                    downloadingCount = downloadingDownloads.size,
+                    maxConcurrent = settings.maxConcurrentDownloads,
+                    addBehavior = settings.addDownloadBehavior,
                     onCodeChanged = { viewModel.onCodeChanged(it) },
-                    onStartDownload = {
-                        viewModel.startDownload()
-                        selectedTab = 1
-                    }
+                    onStartDownload = { viewModel.startDownload() }
                 )
                 1 -> ActiveTasksTab(
-                    activeDownloads = activeDownloads,
+                    downloadingDownloads = downloadingDownloads,
+                    queuedDownloads = queuedDownloads,
+                    pausedDownloads = pausedDownloads,
                     completedDownloads = completedDownloads,
                     listState = activeListState,
                     onPause = { viewModel.pauseDownload(it) },
                     onResume = { viewModel.resumeDownload(it) },
                     onRetry = { viewModel.retryDownload(it) },
                     onCancel = { viewModel.cancelDownload(it) },
+                    onPauseAll = { viewModel.pauseAll() },
+                    onResumeAll = { viewModel.resumeAll() },
+                    onForceStartNow = { viewModel.forceStartNow(it) },
+                    onMoveToTop = { viewModel.moveToTop(it) },
                     onDeleteCompleted = { viewModel.deleteCompletedItem(it) },
                     onClearCompleted = { viewModel.clearAllCompleted() },
-                    onGoToDownload = { selectedTab = 0 }
+                    onGoToDownload = { viewModel.selectTab(0) }
                 )
             }
         }
@@ -243,9 +277,7 @@ fun MoodleDownloadScreen(
         WelcomePermissionsBottomSheet(
             autoStartAcknowledged = settings.autoStartAcknowledged,
             onAutoStartAcknowledged = { viewModel.markAutoStartAcknowledged() },
-            onDismiss = { dontShowAgain ->
-                viewModel.dismissWelcomeSheet(dontShowAgain)
-            }
+            onDismiss = { dontShowAgain -> viewModel.dismissWelcomeSheet(dontShowAgain) }
         )
     }
 
@@ -256,6 +288,13 @@ fun MoodleDownloadScreen(
             onDynamicColorChange = { viewModel.setDynamicColor(it) },
             onWifiOnlyChange = { viewModel.setWifiOnly(it) },
             onAutoRetryChange = { viewModel.setAutoRetry(it) },
+            onMaxRetriesChange = { viewModel.setMaxRetries(it) },
+            onMaxConcurrentDownloadsChange = { viewModel.setMaxConcurrentDownloads(it) },
+            onMaxConcurrentPartsChange = { viewModel.setMaxConcurrentParts(it) },
+            onAddDownloadBehaviorChange = { viewModel.setAddDownloadBehavior(it) },
+            onAutoStartNextChange = { viewModel.setAutoStartNext(it) },
+            onQueueSortOrderChange = { viewModel.setQueueSortOrder(it) },
+            onSpeedLimitChange = { viewModel.setSpeedLimit(it) },
             onVibrateChange = { viewModel.setVibrateOnComplete(it) },
             onAutoClearChange = { viewModel.setAutoClearOnStart(it) },
             onShowProgressNotifsChange = { viewModel.setShowProgressNotifications(it) },
@@ -340,8 +379,8 @@ private fun TopAppBar(
 }
 
 /**
- * Barra flotante en forma de píldora con efecto cristal y fondos sólidos invertidos.
- * Sin efecto ripple pegado y controlado por una única variable.
+ * Barra flotante de pestañas sin ripple pegado ni cuadros grises superpuestos.
+ * Controlada exclusivamente por `selectedIndex`.
  */
 @Composable
 fun FloatingPillNavigationBar(
@@ -365,15 +404,14 @@ fun FloatingPillNavigationBar(
                     spotColor = ElectricCyan.copy(alpha = 0.25f)
                 ),
             shape = RoundedCornerShape(32.dp),
-            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
+            color = if (isDark) MaterialTheme.colorScheme.surface.copy(alpha = 0.94f) else Color(0xFFF1F5F9),
             border = androidx.compose.foundation.BorderStroke(
                 width = 1.dp,
                 color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f)
             )
         ) {
             Row(
-                modifier = Modifier
-                    .padding(horizontal = 6.dp, vertical = 6.dp),
+                modifier = Modifier.padding(horizontal = 6.dp, vertical = 6.dp),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -408,7 +446,6 @@ private fun PillNavButton(
     isDark: Boolean,
     onClick: () -> Unit
 ) {
-    // Fondo sólido invertido con alto contraste
     val targetBg = if (isSelected) {
         if (isDark) Color.White else Color(0xFF0F172A)
     } else {
@@ -430,7 +467,7 @@ private fun PillNavButton(
             .clip(RoundedCornerShape(26.dp))
             .background(bg)
             .clickable(
-                interactionSource = remember { MutableInteractionSource() },
+                interactionSource = remember(title) { MutableInteractionSource() },
                 indication = null,
                 onClick = onClick
             )
@@ -479,15 +516,15 @@ private fun PillNavButton(
 
 /**
  * Pantalla Descargar:
- * Título grande "Pega tu código. Descarga en partes.",
- * caja con el campo y botón "Pegar" dentro.
- * Sin botón "Verificar": se valida solo con debounce.
- * Botón "Descargar" ocupa todo el ancho con degradado, deshabilitado hasta ser válido.
+ * Verificación continua sin botón verificar, cambio de texto a "Agregar a la cola" si se supera el límite.
  */
 @Composable
 fun DownloadInputTab(
     codeText: String,
     parseState: ParseUiState,
+    downloadingCount: Int,
+    maxConcurrent: Int,
+    addBehavior: AddDownloadBehavior,
     onCodeChanged: (String) -> Unit,
     onStartDownload: () -> Unit
 ) {
@@ -495,6 +532,9 @@ fun DownloadInputTab(
     val isValid = parseState is ParseUiState.Valid
     val isInvalid = parseState is ParseUiState.Invalid
     val isValidating = parseState is ParseUiState.Validating
+
+    val isQueueDestination = downloadingCount >= maxConcurrent || addBehavior == AddDownloadBehavior.ADD_TO_QUEUE_ONLY
+    val primaryButtonLabel = if (isQueueDestination) "Agregar a la cola" else "Descargar"
 
     LazyColumn(
         modifier = Modifier
@@ -522,14 +562,11 @@ fun DownloadInputTab(
             )
         }
 
-        // Caja de entrada con campo, botón pegar y estados de validación integrados
         item {
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(26.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surface
-                ),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                 border = CardDefaults.outlinedCardBorder().copy(
                     brush = androidx.compose.ui.graphics.SolidColor(MaterialTheme.colorScheme.outlineVariant)
                 )
@@ -554,7 +591,6 @@ fun DownloadInputTab(
                                 color = MaterialTheme.colorScheme.onSurface
                             )
 
-                            // Estados dentro de la caja
                             if (isValidating) {
                                 CircularProgressIndicator(
                                     modifier = Modifier.size(14.dp),
@@ -571,18 +607,14 @@ fun DownloadInputTab(
                             }
                         }
 
-                        // Botón Pegar dentro de la caja
                         Button(
                             onClick = {
                                 val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
                                 val clip = cm?.primaryClip
                                 if (clip != null && clip.itemCount > 0) {
                                     val text = clip.getItemAt(0).text?.toString() ?: ""
-                                    if (text.isNotBlank()) {
-                                        onCodeChanged(text)
-                                    } else {
-                                        Toast.makeText(context, "El portapapeles está vacío", Toast.LENGTH_SHORT).show()
-                                    }
+                                    if (text.isNotBlank()) onCodeChanged(text)
+                                    else Toast.makeText(context, "El portapapeles está vacío", Toast.LENGTH_SHORT).show()
                                 }
                             },
                             shape = RoundedCornerShape(14.dp),
@@ -594,12 +626,7 @@ fun DownloadInputTab(
                         ) {
                             Icon(Icons.Default.ContentPaste, contentDescription = null, modifier = Modifier.size(15.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = "Pegar",
-                                fontFamily = DmSansFontFamily,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 13.sp
-                            )
+                            Text("Pegar", fontFamily = DmSansFontFamily, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                         }
                     }
 
@@ -641,7 +668,6 @@ fun DownloadInputTab(
                         )
                     )
 
-                    // Mensaje de error claro debajo del campo en rojo suave
                     if (isInvalid && codeText.isNotBlank()) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
@@ -657,7 +683,7 @@ fun DownloadInputTab(
                         }
                     }
 
-                    // Botón "Descargar" ocupa todo el ancho, con degradado, deshabilitado hasta que sea válido
+                    // Botón principal de ancho completo con degradado
                     val manifestSizeText = if (isValid) {
                         " • ${FileUtils.formatBytes((parseState as ParseUiState.Valid).manifest.size)}"
                     } else ""
@@ -670,16 +696,10 @@ fun DownloadInputTab(
                             .background(
                                 if (isValid) BrandGradient
                                 else Brush.linearGradient(
-                                    listOf(
-                                        MaterialTheme.colorScheme.surfaceVariant,
-                                        MaterialTheme.colorScheme.surfaceVariant
-                                    )
+                                    listOf(MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.colorScheme.surfaceVariant)
                                 )
                             )
-                            .clickable(
-                                enabled = isValid,
-                                onClick = onStartDownload
-                            )
+                            .clickable(enabled = isValid, onClick = onStartDownload)
                             .padding(vertical = 14.dp)
                             .testTag("start_download_button"),
                         contentAlignment = Alignment.Center
@@ -689,14 +709,14 @@ fun DownloadInputTab(
                             horizontalArrangement = Arrangement.Center
                         ) {
                             Icon(
-                                imageVector = Icons.Default.Download,
+                                imageVector = if (isQueueDestination) Icons.Default.Layers else Icons.Default.Download,
                                 contentDescription = null,
                                 tint = if (isValid) Color.White else MaterialTheme.colorScheme.outline,
                                 modifier = Modifier.size(18.dp)
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = "Descargar$manifestSizeText",
+                                text = "$primaryButtonLabel$manifestSizeText",
                                 fontFamily = DmSansFontFamily,
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 15.sp,
@@ -708,7 +728,6 @@ fun DownloadInputTab(
             }
         }
 
-        // Tarjeta del archivo con transición suave
         item {
             AnimatedVisibility(
                 visible = isValid,
@@ -728,18 +747,15 @@ fun DownloadInputTab(
 }
 
 @Composable
-fun VerifiedManifestCard(
-    manifest: MoodleManifest
-) {
+fun VerifiedManifestCard(manifest: MoodleManifest) {
     val fileIcon = getFileIconForExtension(manifest.filename)
     val isApk = manifest.filename.endsWith(".apk", ignoreCase = true)
+    val isDark = isSystemInDarkTheme()
 
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(26.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface
-        ),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         border = CardDefaults.outlinedCardBorder().copy(
             brush = androidx.compose.ui.graphics.SolidColor(ElectricBlue.copy(alpha = 0.35f))
         )
@@ -759,10 +775,7 @@ fun VerifiedManifestCard(
                     modifier = Modifier
                         .size(48.dp)
                         .clip(RoundedCornerShape(14.dp))
-                        .background(
-                            if (isApk) SuccessGreen.copy(alpha = 0.15f)
-                            else ElectricBlue.copy(alpha = 0.15f)
-                        ),
+                        .background(if (isApk) SuccessGreen.copy(alpha = 0.15f) else ElectricBlue.copy(alpha = 0.15f)),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
@@ -796,7 +809,7 @@ fun VerifiedManifestCard(
                             fontFamily = DmSansFontFamily,
                             fontSize = 13.sp,
                             fontWeight = FontWeight.Bold,
-                            color = ElectricCyan
+                            color = if (isDark) ElectricCyan else Color(0xFF007399) // Alto contraste en ambos temas
                         )
                         Text(text = "•", color = MaterialTheme.colorScheme.outline)
                         Text(
@@ -809,14 +822,9 @@ fun VerifiedManifestCard(
                 }
             }
 
-            // Hash del archivo: Muestra "Hash pendiente" si no está presente (NUNCA null...null)
             val hashText = if (!manifest.sha256.isNullOrBlank() && manifest.sha256 != "null") {
                 val cleanHash = manifest.sha256.trim()
-                if (cleanHash.length > 16) {
-                    "${cleanHash.take(10)}...${cleanHash.takeLast(8)}"
-                } else {
-                    cleanHash
-                }
+                if (cleanHash.length > 16) "${cleanHash.take(10)}...${cleanHash.takeLast(8)}" else cleanHash
             } else {
                 "Hash pendiente"
             }
@@ -833,10 +841,7 @@ fun VerifiedManifestCard(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         Icon(
                             imageVector = Icons.Default.Security,
                             contentDescription = null,
@@ -862,7 +867,7 @@ fun VerifiedManifestCard(
                             fontFamily = DmSansFontFamily,
                             fontSize = 10.sp,
                             fontWeight = FontWeight.Bold,
-                            color = ElectricCyan
+                            color = if (isDark) ElectricCyan else Color(0xFF007399)
                         )
                     }
                 }
@@ -873,46 +878,123 @@ fun VerifiedManifestCard(
 
 /**
  * Pantalla En curso:
- * - Partes como bloques en fila (uno por parte): completadas con degradado, actual con pulso suave, pendientes en gris.
- * - Controles Pausar, Reanudar, Cancelar.
- * - Porcentaje grande (40px).
- * - Velocidad en etiqueta aparte.
- * - Tiempo restante debajo.
- * - Botón "Cancelar descarga" en rojo.
- * - Estado vacío: "Nada descargándose. Pega un código para empezar."
- * - Sección "Completados" al final.
+ * Secciones: Descargando, En cola, Pausadas, Completados.
+ * Acciones globales: Pausar todo, Reanudar todo.
  */
 @Composable
 fun ActiveTasksTab(
-    activeDownloads: List<DownloadEntity>,
+    downloadingDownloads: List<DownloadEntity>,
+    queuedDownloads: List<DownloadEntity>,
+    pausedDownloads: List<DownloadEntity>,
     completedDownloads: List<DownloadEntity>,
     listState: LazyListState,
     onPause: (String) -> Unit,
     onResume: (String) -> Unit,
     onRetry: (String) -> Unit,
     onCancel: (String) -> Unit,
+    onPauseAll: () -> Unit,
+    onResumeAll: () -> Unit,
+    onForceStartNow: (String) -> Unit,
+    onMoveToTop: (String) -> Unit,
     onDeleteCompleted: (String) -> Unit,
     onClearCompleted: () -> Unit,
     onGoToDownload: () -> Unit
 ) {
     val context = LocalContext.current
     val reducedMotion = remember { isReducedMotion(context) }
+    val isDark = isSystemInDarkTheme()
+
+    val totalActiveAndQueued = downloadingDownloads.size + queuedDownloads.size + pausedDownloads.size
 
     LazyColumn(
         state = listState,
         modifier = Modifier
             .fillMaxSize()
             .padding(horizontal = 20.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(18.dp)
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        if (activeDownloads.isEmpty()) {
+        // Barra superior de acciones globales cuando hay más de una descarga activa
+        if (totalActiveAndQueued > 1) {
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (downloadingDownloads.isNotEmpty()) {
+                        OutlinedButton(
+                            onClick = onPauseAll,
+                            modifier = Modifier
+                                .weight(1f)
+                                .defaultMinSize(minHeight = 40.dp),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Icon(Icons.Default.Pause, contentDescription = null, modifier = Modifier.size(15.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Pausar todo", fontFamily = DmSansFontFamily, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+
+                    if (pausedDownloads.isNotEmpty()) {
+                        Button(
+                            onClick = onResumeAll,
+                            modifier = Modifier
+                                .weight(1f)
+                                .defaultMinSize(minHeight = 40.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = ElectricBlue, contentColor = Color.White)
+                        ) {
+                            Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(15.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Reanudar todo", fontFamily = DmSansFontFamily, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+        }
+
+        // Fila compacta "Ir a Descargar" si no hay nada activo pero sí completados
+        if (totalActiveAndQueued == 0 && completedDownloads.isNotEmpty()) {
+            item {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(18.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Sin descargas activas",
+                            fontFamily = DmSansFontFamily,
+                            fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Button(
+                            onClick = onGoToDownload,
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.defaultMinSize(minHeight = 36.dp)
+                        ) {
+                            Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(14.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Nueva descarga", fontFamily = DmSansFontFamily, fontSize = 12.sp)
+                        }
+                    }
+                }
+            }
+        }
+
+        // Tarjeta grande de estado vacío si no hay absolutamente nada
+        if (totalActiveAndQueued == 0 && completedDownloads.isEmpty()) {
             item {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(26.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surface
-                    ),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                     border = CardDefaults.outlinedCardBorder().copy(
                         brush = androidx.compose.ui.graphics.SolidColor(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
                     )
@@ -931,12 +1013,7 @@ fun ActiveTasksTab(
                                 .background(MaterialTheme.colorScheme.surfaceVariant),
                             contentAlignment = Alignment.Center
                         ) {
-                            Icon(
-                                imageVector = Icons.Default.Layers,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.outline,
-                                modifier = Modifier.size(32.dp)
-                            )
+                            Icon(Icons.Default.Layers, contentDescription = null, tint = MaterialTheme.colorScheme.outline, modifier = Modifier.size(32.dp))
                         }
 
                         Text(
@@ -951,29 +1028,27 @@ fun ActiveTasksTab(
                         Button(
                             onClick = onGoToDownload,
                             shape = RoundedCornerShape(18.dp),
-                            modifier = Modifier.defaultMinSize(minHeight = 44.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.primaryContainer,
-                                contentColor = MaterialTheme.colorScheme.onPrimaryContainer
-                            )
+                            modifier = Modifier.defaultMinSize(minHeight = 44.dp)
                         ) {
                             Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = "Ir a Descargar",
-                                fontFamily = DmSansFontFamily,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 13.sp
-                            )
+                            Text("Ir a Descargar", fontFamily = DmSansFontFamily, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                         }
                     }
                 }
             }
-        } else {
-            items(activeDownloads, key = { it.id }) { task ->
+        }
+
+        // Sección: Descargando
+        if (downloadingDownloads.isNotEmpty()) {
+            item {
+                SectionHeader(title = "Descargando", count = downloadingDownloads.size, color = ElectricCyan)
+            }
+            items(downloadingDownloads, key = { it.id }) { task ->
                 ActiveTaskCard(
                     task = task,
                     reducedMotion = reducedMotion,
+                    isDark = isDark,
                     onPause = { onPause(task.id) },
                     onResume = { onResume(task.id) },
                     onRetry = { onRetry(task.id) },
@@ -982,86 +1057,64 @@ fun ActiveTasksTab(
             }
         }
 
-        // Sección 2: Completados (Al final de la pantalla)
-        item {
-            Spacer(modifier = Modifier.height(10.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Text(
-                        text = "Completados",
-                        fontFamily = BricolageGrotesqueFontFamily,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 20.sp,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                    if (completedDownloads.isNotEmpty()) {
-                        Box(
-                            modifier = Modifier
-                                .clip(CircleShape)
-                                .background(SuccessGreen.copy(alpha = 0.2f))
-                                .padding(horizontal = 8.dp, vertical = 2.dp)
-                        ) {
-                            Text(
-                                text = completedDownloads.size.toString(),
-                                fontFamily = DmSansFontFamily,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 12.sp,
-                                color = SuccessGreen
-                            )
-                        }
-                    }
-                }
-
-                if (completedDownloads.isNotEmpty()) {
-                    OutlinedButton(
-                        onClick = onClearCompleted,
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.defaultMinSize(minHeight = 44.dp)
-                    ) {
-                        Icon(Icons.Default.DeleteOutline, contentDescription = null, modifier = Modifier.size(14.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = "Limpiar todo",
-                            fontFamily = DmSansFontFamily,
-                            fontSize = 12.sp
-                        )
-                    }
-                }
+        // Sección: En cola
+        if (queuedDownloads.isNotEmpty()) {
+            item {
+                SectionHeader(title = "En cola", count = queuedDownloads.size, color = MaterialTheme.colorScheme.outline)
+            }
+            items(queuedDownloads, key = { it.id }) { task ->
+                val indexInQueue = queuedDownloads.indexOf(task) + 1
+                QueuedTaskCard(
+                    task = task,
+                    position = indexInQueue,
+                    onStartNow = { onForceStartNow(task.id) },
+                    onMoveToTop = { onMoveToTop(task.id) },
+                    onRemove = { onCancel(task.id) }
+                )
             }
         }
 
-        if (completedDownloads.isEmpty()) {
+        // Sección: Pausadas
+        if (pausedDownloads.isNotEmpty()) {
             item {
-                Card(
+                SectionHeader(title = "Pausadas", count = pausedDownloads.size, color = WarningAmber)
+            }
+            items(pausedDownloads, key = { it.id }) { task ->
+                ActiveTaskCard(
+                    task = task,
+                    reducedMotion = reducedMotion,
+                    isDark = isDark,
+                    onPause = { onPause(task.id) },
+                    onResume = { onResume(task.id) },
+                    onRetry = { onRetry(task.id) },
+                    onCancel = { onCancel(task.id) }
+                )
+            }
+        }
+
+        // Sección: Completados
+        if (completedDownloads.isNotEmpty()) {
+            item {
+                Spacer(modifier = Modifier.height(10.dp))
+                Row(
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(22.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
-                    )
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(24.dp),
-                        contentAlignment = Alignment.Center
+                    SectionHeader(title = "Completados", count = completedDownloads.size, color = SuccessGreen)
+
+                    OutlinedButton(
+                        onClick = onClearCompleted,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.defaultMinSize(minHeight = 38.dp)
                     ) {
-                        Text(
-                            text = "Aún no hay descargas completadas.",
-                            fontFamily = DmSansFontFamily,
-                            fontSize = 13.sp,
-                            color = MaterialTheme.colorScheme.outline
-                        )
+                        Icon(Icons.Default.DeleteOutline, contentDescription = null, modifier = Modifier.size(14.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Limpiar todo", fontFamily = DmSansFontFamily, fontSize = 12.sp)
                     }
                 }
             }
-        } else {
+
             items(completedDownloads, key = { it.id }) { item ->
                 CompletedFileCard(
                     item = item,
@@ -1071,8 +1124,7 @@ fun ActiveTasksTab(
                                 val uri = Uri.parse(uriStr)
                                 val intent = Intent(Intent.ACTION_VIEW).apply {
                                     setDataAndType(uri, context.contentResolver.getType(uri) ?: "*/*")
-                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
                                 }
                                 context.startActivity(intent)
                             } catch (_: Exception) {
@@ -1106,17 +1158,49 @@ fun ActiveTasksTab(
     }
 }
 
+@Composable
+fun SectionHeader(title: String, count: Int, color: Color) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Text(
+            text = title,
+            fontFamily = BricolageGrotesqueFontFamily,
+            fontWeight = FontWeight.Bold,
+            fontSize = 20.sp,
+            color = MaterialTheme.colorScheme.onSurface
+        )
+        Box(
+            modifier = Modifier
+                .clip(CircleShape)
+                .background(color.copy(alpha = 0.2f))
+                .padding(horizontal = 8.dp, vertical = 2.dp)
+        ) {
+            Text(
+                text = count.toString(),
+                fontFamily = DmSansFontFamily,
+                fontWeight = FontWeight.Bold,
+                fontSize = 12.sp,
+                color = color
+            )
+        }
+    }
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun ActiveTaskCard(
     task: DownloadEntity,
     reducedMotion: Boolean,
+    isDark: Boolean,
     onPause: () -> Unit,
     onResume: () -> Unit,
     onRetry: () -> Unit,
     onCancel: () -> Unit
 ) {
     val fileIcon = getFileIconForExtension(task.fileName)
+    var isExpanded by remember { mutableStateOf(false) }
 
     val infiniteTransition = rememberInfiniteTransition(label = "part_pulse")
     val pulseAlpha by if (reducedMotion) {
@@ -1133,20 +1217,20 @@ fun ActiveTaskCard(
         )
     }
 
-    val isPaused = task.status == DownloadState.PAUSED.name
+    val isPaused = task.status == DownloadState.PAUSED.name || task.status == DownloadState.PAUSING.name
+    val isPausing = task.status == DownloadState.PAUSING.name
     val isError = task.status == DownloadState.ERROR.name
-    val isQueued = task.status == DownloadState.QUEUED.name
 
     val percent = if (task.totalBytes > 0) {
         ((task.downloadedBytes * 100) / task.totalBytes).toInt().coerceIn(0, 99)
     } else 0
 
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { isExpanded = !isExpanded },
         shape = RoundedCornerShape(26.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface
-        ),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         border = CardDefaults.outlinedCardBorder().copy(
             brush = androidx.compose.ui.graphics.SolidColor(
                 if (isError) ErrorRose.copy(alpha = 0.4f)
@@ -1186,13 +1270,15 @@ fun ActiveTaskCard(
                 }
 
                 Column(modifier = Modifier.weight(1f)) {
+                    // Hasta 2 líneas sin cortar bruscamente, click para ver completo
                     Text(
                         text = task.fileName,
                         fontFamily = BricolageGrotesqueFontFamily,
                         fontWeight = FontWeight.Bold,
                         fontSize = 15.sp,
                         color = MaterialTheme.colorScheme.onSurface,
-                        maxLines = 1,
+                        maxLines = if (isExpanded) 10 else 2,
+                        lineHeight = 20.sp,
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
@@ -1203,7 +1289,6 @@ fun ActiveTaskCard(
                     )
                 }
 
-                // Velocidad en etiqueta aparte
                 if (task.speedBps > 0 && !isPaused && !isError) {
                     Box(
                         modifier = Modifier
@@ -1218,14 +1303,14 @@ fun ActiveTaskCard(
                                 fontFamily = DmSansFontFamily,
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = ElectricCyan
+                                color = if (isDark) ElectricCyan else Color(0xFF007399)
                             )
                         }
                     }
                 }
             }
 
-            // Porcentaje grande (40px) y estado
+            // Porcentaje y tiempo restante
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -1252,7 +1337,7 @@ fun ActiveTaskCard(
 
                 Column(horizontalAlignment = Alignment.End) {
                     Text(
-                        text = if (isError) "Error" else if (isPaused) "Pausada" else if (isQueued) "En cola" else "Parte ${task.currentPart} de ${task.totalParts}",
+                        text = if (isError) "Error" else if (isPausing) "Pausando..." else if (isPaused) "Pausada" else "Parte ${task.currentPart} de ${task.totalParts}",
                         fontFamily = DmSansFontFamily,
                         fontWeight = FontWeight.SemiBold,
                         fontSize = 13.sp,
@@ -1270,48 +1355,26 @@ fun ActiveTaskCard(
                 }
             }
 
-            // Bloques de partes en fila
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                FlowRow(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                    maxItemsInEachRow = task.totalParts.coerceAtMost(16)
-                ) {
-                    for (i in 1..task.totalParts) {
-                        val isDone = i <= task.completedParts
-                        val isCurrent = i == task.currentPart && !isPaused && !isError
+            // Segmentos de partes: si > 13 partes, barra continua proporcional limpia
+            PartsProgressVisualization(
+                totalParts = task.totalParts,
+                completedParts = task.completedParts,
+                currentPart = task.currentPart,
+                isPaused = isPaused,
+                isError = isError,
+                pulseAlpha = pulseAlpha
+            )
 
-                        Box(
-                            modifier = Modifier
-                                .weight(1f, fill = true)
-                                .defaultMinSize(minWidth = 14.dp)
-                                .height(8.dp)
-                                .clip(RoundedCornerShape(4.dp))
-                                .then(
-                                    when {
-                                        isDone -> Modifier.background(BrandGradient)
-                                        isCurrent -> Modifier
-                                            .background(ElectricCyan.copy(alpha = pulseAlpha))
-                                            .border(1.dp, ElectricBlue, RoundedCornerShape(4.dp))
-                                        else -> Modifier.background(MaterialTheme.colorScheme.surfaceVariant)
-                                    }
-                                )
-                        )
-                    }
-                }
-
-                if (!task.errorMessage.isNullOrBlank()) {
-                    Text(
-                        text = task.errorMessage,
-                        fontFamily = DmSansFontFamily,
-                        fontSize = 12.sp,
-                        color = if (isError) ErrorRose else WarningAmber
-                    )
-                }
+            if (!task.errorMessage.isNullOrBlank()) {
+                Text(
+                    text = task.errorMessage,
+                    fontFamily = DmSansFontFamily,
+                    fontSize = 12.sp,
+                    color = if (isError) ErrorRose else WarningAmber
+                )
             }
 
-            // Botones de acción: Pausar / Reanudar / Reintentar y Cancelar
+            // Botones de acción
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -1324,10 +1387,7 @@ fun ActiveTaskCard(
                             .weight(1f)
                             .defaultMinSize(minHeight = 44.dp),
                         shape = RoundedCornerShape(14.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = ElectricBlue,
-                            contentColor = Color.White
-                        )
+                        colors = ButtonDefaults.buttonColors(containerColor = ElectricBlue, contentColor = Color.White)
                     ) {
                         Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(6.dp))
@@ -1340,10 +1400,7 @@ fun ActiveTaskCard(
                             .weight(1f)
                             .defaultMinSize(minHeight = 44.dp),
                         shape = RoundedCornerShape(14.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = WarningAmber,
-                            contentColor = Color.White
-                        )
+                        colors = ButtonDefaults.buttonColors(containerColor = WarningAmber, contentColor = Color.White)
                     ) {
                         Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(6.dp))
@@ -1367,18 +1424,197 @@ fun ActiveTaskCard(
                     onClick = onCancel,
                     shape = RoundedCornerShape(14.dp),
                     modifier = Modifier.defaultMinSize(minHeight = 44.dp),
-                    colors = ButtonDefaults.outlinedButtonColors(
-                        contentColor = ErrorRose
-                    ),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = ErrorRose),
                     border = androidx.compose.foundation.BorderStroke(1.dp, ErrorRose.copy(alpha = 0.5f))
                 ) {
                     Icon(Icons.Default.Clear, contentDescription = null, modifier = Modifier.size(15.dp))
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = "Cancelar",
-                        fontFamily = DmSansFontFamily,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 13.sp
+                    Text("Cancelar", fontFamily = DmSansFontFamily, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Visualización de partes: con más de 13 partes, barra continua segmentada sin puntos dispersos.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun PartsProgressVisualization(
+    totalParts: Int,
+    completedParts: Int,
+    currentPart: Int,
+    isPaused: Boolean,
+    isError: Boolean,
+    pulseAlpha: Float
+) {
+    if (totalParts > 13) {
+        // Barra continua segmentada
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(8.dp)
+                .clip(RoundedCornerShape(4.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+        ) {
+            Row(modifier = Modifier.fillMaxSize()) {
+                val completedFraction = (completedParts.toFloat() / totalParts).coerceIn(0f, 1f)
+                val currentFraction = if (!isPaused && !isError && currentPart > completedParts) {
+                    (1f / totalParts).coerceIn(0f, 1f - completedFraction)
+                } else 0f
+
+                if (completedFraction > 0f) {
+                    Box(
+                        modifier = Modifier
+                            .weight(completedFraction)
+                            .fillMaxSize()
+                            .background(BrandGradient)
+                    )
+                }
+                if (currentFraction > 0f) {
+                    Box(
+                        modifier = Modifier
+                            .weight(currentFraction)
+                            .fillMaxSize()
+                            .background(ElectricCyan.copy(alpha = pulseAlpha))
+                    )
+                }
+                val remainingFraction = 1f - completedFraction - currentFraction
+                if (remainingFraction > 0f) {
+                    Box(
+                        modifier = Modifier
+                            .weight(remainingFraction)
+                            .fillMaxSize()
+                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                    )
+                }
+            }
+        }
+    } else {
+        // Bloques discretos en fila
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+            maxItemsInEachRow = totalParts.coerceAtMost(13)
+        ) {
+            for (i in 1..totalParts) {
+                val isDone = i <= completedParts
+                val isCurrent = i == currentPart && !isPaused && !isError
+
+                Box(
+                    modifier = Modifier
+                        .weight(1f, fill = true)
+                        .defaultMinSize(minWidth = 14.dp)
+                        .height(8.dp)
+                        .clip(RoundedCornerShape(4.dp))
+                        .then(
+                            when {
+                                isDone -> Modifier.background(BrandGradient)
+                                isCurrent -> Modifier
+                                    .background(ElectricCyan.copy(alpha = pulseAlpha))
+                                    .border(1.dp, ElectricBlue, RoundedCornerShape(4.dp))
+                                else -> Modifier.background(MaterialTheme.colorScheme.surfaceVariant)
+                            }
+                        )
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Tarjeta para elementos en Cola con posición y menú
+ */
+@Composable
+fun QueuedTaskCard(
+    task: DownloadEntity,
+    position: Int,
+    onStartNow: () -> Unit,
+    onMoveToTop: () -> Unit,
+    onRemove: () -> Unit
+) {
+    var menuExpanded by remember { mutableStateOf(false) }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(22.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = CardDefaults.outlinedCardBorder().copy(
+            brush = androidx.compose.ui.graphics.SolidColor(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
+        )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "#$position",
+                    fontFamily = BricolageGrotesqueFontFamily,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 14.sp,
+                    color = ElectricCyan
+                )
+            }
+
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = task.fileName,
+                    fontFamily = BricolageGrotesqueFontFamily,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 14.sp,
+                    maxLines = 2,
+                    lineHeight = 18.sp,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = "${FileUtils.formatBytes(task.totalBytes)} • ${task.totalParts} partes",
+                    fontFamily = DmSansFontFamily,
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            Box {
+                IconButton(onClick = { menuExpanded = true }) {
+                    Icon(Icons.Default.MoreVert, contentDescription = "Opciones")
+                }
+
+                DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
+                    DropdownMenuItem(
+                        text = { Text("Iniciar ahora", fontFamily = DmSansFontFamily, fontWeight = FontWeight.Bold) },
+                        leadingIcon = { Icon(Icons.Default.PlayArrow, contentDescription = null, tint = ElectricCyan) },
+                        onClick = {
+                            menuExpanded = false
+                            onStartNow()
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Mover al inicio", fontFamily = DmSansFontFamily) },
+                        leadingIcon = { Icon(Icons.Default.ArrowUpward, contentDescription = null) },
+                        onClick = {
+                            menuExpanded = false
+                            onMoveToTop()
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Quitar de la cola", fontFamily = DmSansFontFamily, color = ErrorRose) },
+                        leadingIcon = { Icon(Icons.Default.DeleteOutline, contentDescription = null, tint = ErrorRose) },
+                        onClick = {
+                            menuExpanded = false
+                            onRemove()
+                        }
                     )
                 }
             }
@@ -1397,17 +1633,15 @@ fun CompletedFileCard(
     val isApk = item.fileName.endsWith(".apk", ignoreCase = true)
     val isSuccess = item.status == DownloadState.COMPLETED.name
     val isWarning = item.status == "COMPLETED_WARN_HASH"
+    val isDark = isSystemInDarkTheme()
 
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(22.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface
-        ),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         border = CardDefaults.outlinedCardBorder().copy(
             brush = androidx.compose.ui.graphics.SolidColor(
-                if (isSuccess) SuccessGreen.copy(alpha = 0.35f)
-                else WarningAmber.copy(alpha = 0.35f)
+                if (isSuccess) SuccessGreen.copy(alpha = 0.35f) else WarningAmber.copy(alpha = 0.35f)
             )
         )
     ) {
@@ -1427,8 +1661,7 @@ fun CompletedFileCard(
                         .size(44.dp)
                         .clip(RoundedCornerShape(12.dp))
                         .background(
-                            if (isSuccess) SuccessGreen.copy(alpha = 0.15f)
-                            else WarningAmber.copy(alpha = 0.15f)
+                            if (isSuccess) SuccessGreen.copy(alpha = 0.15f) else WarningAmber.copy(alpha = 0.15f)
                         ),
                     contentAlignment = Alignment.Center
                 ) {
@@ -1447,7 +1680,8 @@ fun CompletedFileCard(
                         fontWeight = FontWeight.Bold,
                         fontSize = 15.sp,
                         color = MaterialTheme.colorScheme.onSurface,
-                        maxLines = 1,
+                        maxLines = 2,
+                        lineHeight = 20.sp,
                         overflow = TextOverflow.Ellipsis
                     )
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -1455,7 +1689,7 @@ fun CompletedFileCard(
                             text = FileUtils.formatBytes(item.totalBytes),
                             fontFamily = DmSansFontFamily,
                             fontSize = 12.sp,
-                            color = ElectricCyan,
+                            color = if (isDark) ElectricCyan else Color(0xFF007399), // Contraste 4.5:1
                             fontWeight = FontWeight.SemiBold
                         )
                         Text(text = "•", color = MaterialTheme.colorScheme.outline)
@@ -1477,7 +1711,6 @@ fun CompletedFileCard(
                 }
             }
 
-            // Botón Instalar / Abrir
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -1515,6 +1748,9 @@ fun CompletedFileCard(
     }
 }
 
+/**
+ * Ajustes completos con la nueva sección "Cola y simultaneidad"
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsBottomSheet(
@@ -1523,6 +1759,13 @@ fun SettingsBottomSheet(
     onDynamicColorChange: (Boolean) -> Unit,
     onWifiOnlyChange: (Boolean) -> Unit,
     onAutoRetryChange: (Boolean) -> Unit,
+    onMaxRetriesChange: (Int) -> Unit,
+    onMaxConcurrentDownloadsChange: (Int) -> Unit,
+    onMaxConcurrentPartsChange: (Int) -> Unit,
+    onAddDownloadBehaviorChange: (AddDownloadBehavior) -> Unit,
+    onAutoStartNextChange: (Boolean) -> Unit,
+    onQueueSortOrderChange: (QueueSortOrder) -> Unit,
+    onSpeedLimitChange: (SpeedLimit) -> Unit,
     onVibrateChange: (Boolean) -> Unit,
     onAutoClearChange: (Boolean) -> Unit,
     onShowProgressNotifsChange: (Boolean) -> Unit,
@@ -1567,8 +1810,105 @@ fun SettingsBottomSheet(
                 }
             }
 
-            // Sección 1: Descargas sin interrupciones (Controles de permisos y batería permanentes)
+            // SECCIÓN: Cola y simultaneidad
             item {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(
+                        text = "Cola y simultaneidad",
+                        fontFamily = DmSansFontFamily,
+                        style = MaterialTheme.typography.labelLarge,
+                        color = ElectricCyan,
+                        fontWeight = FontWeight.Bold
+                    )
+
+                    // 1. Descargas simultáneas
+                    SettingOptionSelectorRow(
+                        title = "Descargas simultáneas",
+                        description = "Cuántos archivos se descargan a la vez.",
+                        currentValue = "${settings.maxConcurrentDownloads} archivos",
+                        options = listOf(1, 2, 3, 4),
+                        selectedOption = settings.maxConcurrentDownloads,
+                        onOptionSelected = onMaxConcurrentDownloadsChange
+                    )
+
+                    // 2. Partes simultáneas por archivo
+                    SettingOptionSelectorRow(
+                        title = "Partes simultáneas por archivo",
+                        description = "Más partes a la vez puede ser más rápido pero consume más batería y datos.",
+                        currentValue = "${settings.maxConcurrentParts} partes",
+                        options = listOf(1, 2, 3, 4),
+                        selectedOption = settings.maxConcurrentParts,
+                        onOptionSelected = onMaxConcurrentPartsChange
+                    )
+
+                    // 3. Al agregar una descarga
+                    SettingRadioGroupRow(
+                        title = "Al agregar una descarga",
+                        description = "Comportamiento al presionar el botón de descarga.",
+                        currentLabel = settings.addDownloadBehavior.label,
+                        options = AddDownloadBehavior.values().toList(),
+                        selected = settings.addDownloadBehavior,
+                        labelProvider = { it.label },
+                        onSelect = onAddDownloadBehaviorChange
+                    )
+
+                    // 4. Iniciar la siguiente automáticamente
+                    SettingToggleRow(
+                        title = "Iniciar la siguiente automáticamente",
+                        subtitle = "Arrancar la próxima descarga en cola al liberar un lugar",
+                        icon = Icons.Default.Layers,
+                        checked = settings.autoStartNext,
+                        onCheckedChange = onAutoStartNextChange
+                    )
+
+                    // 5. Orden de la cola
+                    SettingRadioGroupRow(
+                        title = "Orden de la cola",
+                        description = "Prioridad para procesar descargas en espera.",
+                        currentLabel = settings.queueSortOrder.label,
+                        options = QueueSortOrder.values().toList(),
+                        selected = settings.queueSortOrder,
+                        labelProvider = { it.label },
+                        onSelect = onQueueSortOrderChange
+                    )
+
+                    // 6. Reintentos automáticos
+                    SettingToggleRow(
+                        title = "Reanudación automática",
+                        subtitle = "Reintentar si la red se corta y continuar desde la última parte",
+                        icon = Icons.Default.Refresh,
+                        checked = settings.autoRetry,
+                        onCheckedChange = onAutoRetryChange
+                    )
+
+                    if (settings.autoRetry) {
+                        SettingOptionSelectorRow(
+                            title = "Máximo de intentos",
+                            description = "Intentos antes de marcar error definitivo.",
+                            currentValue = "${settings.maxRetries} intentos",
+                            options = listOf(1, 3, 5),
+                            selectedOption = settings.maxRetries,
+                            onOptionSelected = onMaxRetriesChange
+                        )
+                    }
+
+                    // 7. Límite de velocidad
+                    SettingRadioGroupRow(
+                        title = "Límite de velocidad",
+                        description = "Controlar el ancho de banda usado por descarga.",
+                        currentLabel = settings.speedLimit.label,
+                        options = SpeedLimit.values().toList(),
+                        selected = settings.speedLimit,
+                        labelProvider = { it.label },
+                        onSelect = onSpeedLimitChange
+                    )
+                }
+            }
+
+            // SECCIÓN: Descargas sin interrupciones
+            item {
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                Spacer(modifier = Modifier.height(4.dp))
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
                         text = "Descargas sin interrupciones",
@@ -1596,7 +1936,7 @@ fun SettingsBottomSheet(
                 }
             }
 
-            // Sección 2: Tema visual
+            // SECCIÓN: Tema visual
             item {
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
                 Spacer(modifier = Modifier.height(4.dp))
@@ -1649,13 +1989,13 @@ fun SettingsBottomSheet(
                 }
             }
 
-            // Sección 3: Red y Descarga
+            // SECCIÓN: Avisos y Comportamiento
             item {
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
                 Spacer(modifier = Modifier.height(4.dp))
                 Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
                     Text(
-                        text = "Red y Descargas",
+                        text = "Avisos y Comportamiento",
                         fontFamily = DmSansFontFamily,
                         style = MaterialTheme.typography.labelLarge,
                         color = ElectricCyan,
@@ -1668,29 +2008,6 @@ fun SettingsBottomSheet(
                         icon = Icons.Default.Wifi,
                         checked = settings.wifiOnly,
                         onCheckedChange = onWifiOnlyChange
-                    )
-
-                    SettingToggleRow(
-                        title = "Reanudación automática",
-                        subtitle = "Reintentar si la red se corta y continuar desde la última parte",
-                        icon = Icons.Default.Refresh,
-                        checked = settings.autoRetry,
-                        onCheckedChange = onAutoRetryChange
-                    )
-                }
-            }
-
-            // Sección 4: Avisos y Comportamiento
-            item {
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-                Spacer(modifier = Modifier.height(4.dp))
-                Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                    Text(
-                        text = "Avisos y Comportamiento",
-                        fontFamily = DmSansFontFamily,
-                        style = MaterialTheme.typography.labelLarge,
-                        color = ElectricCyan,
-                        fontWeight = FontWeight.Bold
                     )
 
                     SettingToggleRow(
@@ -1731,16 +2048,138 @@ fun SettingsBottomSheet(
             }
 
             item {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.Center
-                ) {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
                     Text(
                         text = "Download Chunk • 2026 Pro Edition",
                         fontFamily = DmSansFontFamily,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.outline
                     )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun SettingOptionSelectorRow(
+    title: String,
+    description: String,
+    currentValue: String,
+    options: List<Int>,
+    selectedOption: Int,
+    onOptionSelected: (Int) -> Unit
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(text = title, fontFamily = DmSansFontFamily, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                Text(text = currentValue, fontFamily = DmSansFontFamily, fontWeight = FontWeight.Bold, fontSize = 13.sp, color = ElectricCyan)
+            }
+            Text(text = description, fontFamily = DmSansFontFamily, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                for (opt in options) {
+                    val isSel = opt == selectedOption
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .defaultMinSize(minHeight = 36.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(if (isSel) ElectricBlue else MaterialTheme.colorScheme.surface)
+                            .clickable { onOptionSelected(opt) },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = opt.toString(),
+                            fontFamily = DmSansFontFamily,
+                            fontWeight = if (isSel) FontWeight.Bold else FontWeight.Medium,
+                            fontSize = 13.sp,
+                            color = if (isSel) Color.White else MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun <T> SettingRadioGroupRow(
+    title: String,
+    description: String,
+    currentLabel: String,
+    options: List<T>,
+    selected: T,
+    labelProvider: (T) -> String,
+    onSelect: (T) -> Unit
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(text = title, fontFamily = DmSansFontFamily, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                Text(
+                    text = currentLabel,
+                    fontFamily = DmSansFontFamily,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 12.sp,
+                    color = ElectricCyan,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Text(text = description, fontFamily = DmSansFontFamily, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                for (opt in options) {
+                    val isSel = opt == selected
+                    val label = labelProvider(opt)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(if (isSel) ElectricBlue.copy(alpha = 0.12f) else Color.Transparent)
+                            .clickable { onSelect(opt) }
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = label,
+                            fontFamily = DmSansFontFamily,
+                            fontSize = 13.sp,
+                            fontWeight = if (isSel) FontWeight.Bold else FontWeight.Normal,
+                            color = if (isSel) ElectricCyan else MaterialTheme.colorScheme.onSurface
+                        )
+                        if (isSel) {
+                            Icon(Icons.Default.Check, contentDescription = null, tint = ElectricCyan, modifier = Modifier.size(16.dp))
+                        }
+                    }
                 }
             }
         }

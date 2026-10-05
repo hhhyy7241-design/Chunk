@@ -1,13 +1,15 @@
 package com.example.ui
 
 import android.app.Application
-import android.content.Context
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.data.AddDownloadBehavior
 import com.example.data.AppSettings
 import com.example.data.DownloadEntity
 import com.example.data.DownloadRepository
+import com.example.data.QueueSortOrder
 import com.example.data.SettingsManager
+import com.example.data.SpeedLimit
 import com.example.data.ThemeMode
 import com.example.model.MoodleManifest
 import com.example.parser.MoodleCodeParser
@@ -31,6 +33,12 @@ sealed interface ParseUiState {
     data class Invalid(val message: String, val detail: String? = null) : ParseUiState
 }
 
+data class AddDownloadSnackbarEvent(
+    val message: String,
+    val actionLabel: String? = "Ver",
+    val targetTab: Int = 1
+)
+
 class DownloadViewModel(application: Application) : AndroidViewModel(application) {
 
     private val repository = DownloadRepository(application)
@@ -38,7 +46,15 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
 
     val settings: StateFlow<AppSettings> = settingsManager.settings
 
-    // Room como única fuente de verdad reactiva
+    // Tab seleccionado centralizado (0: Descargar, 1: En curso)
+    private val _selectedTab = MutableStateFlow(0)
+    val selectedTab: StateFlow<Int> = _selectedTab.asStateFlow()
+
+    fun selectTab(index: Int) {
+        _selectedTab.value = index.coerceIn(0, 1)
+    }
+
+    // Flujos reactivos directos de Room
     val allDownloads: StateFlow<List<DownloadEntity>> = repository.allDownloads
         .stateIn(
             scope = viewModelScope,
@@ -47,6 +63,27 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
         )
 
     val activeDownloads: StateFlow<List<DownloadEntity>> = repository.activeDownloads
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
+
+    val downloadingDownloads: StateFlow<List<DownloadEntity>> = repository.downloadingDownloads
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
+
+    val queuedDownloads: StateFlow<List<DownloadEntity>> = repository.queuedDownloads
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
+
+    val pausedDownloads: StateFlow<List<DownloadEntity>> = repository.pausedDownloads
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5000),
@@ -66,8 +103,8 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
     private val _parseState = MutableStateFlow<ParseUiState>(ParseUiState.Idle)
     val parseState: StateFlow<ParseUiState> = _parseState.asStateFlow()
 
-    private val _snackbarMessage = MutableSharedFlow<String>()
-    val snackbarMessage: SharedFlow<String> = _snackbarMessage.asSharedFlow()
+    private val _snackbarEvent = MutableSharedFlow<AddDownloadSnackbarEvent>()
+    val snackbarEvent: SharedFlow<AddDownloadSnackbarEvent> = _snackbarEvent.asSharedFlow()
 
     private val _showWelcomeSheet = MutableStateFlow(false)
     val showWelcomeSheet: StateFlow<Boolean> = _showWelcomeSheet.asStateFlow()
@@ -75,11 +112,9 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
     private var parseDebounceJob: Job? = null
 
     init {
-        // Al reabrir la app o tras cierre forzado, retoma descargas que estaban activas
         viewModelScope.launch {
             repository.resumePendingDownloadsOnStartup()
         }
-
         checkWelcomeSheetEligibility()
     }
 
@@ -93,7 +128,6 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
             return
         }
 
-        // Validación automática con pequeña espera (debounce) tras escribir o pegar
         parseDebounceJob = viewModelScope.launch {
             _parseState.value = ParseUiState.Validating
             delay(350)
@@ -111,12 +145,7 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
 
     fun startDownload(customFileName: String? = null) {
         val code = _codeText.value.trim()
-        if (code.isEmpty()) {
-            viewModelScope.launch {
-                _snackbarMessage.emit("Introduce o pega un código de Moodle primero.")
-            }
-            return
-        }
+        if (code.isEmpty()) return
 
         var currentParse = _parseState.value
         if (currentParse !is ParseUiState.Valid) {
@@ -127,72 +156,54 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
                 }
                 is MoodleCodeParser.ParseResult.Error -> {
                     _parseState.value = ParseUiState.Invalid(result.message, result.detail)
-                    viewModelScope.launch {
-                        _snackbarMessage.emit(result.message)
-                    }
                     return
                 }
             }
         }
 
         val manifest = (currentParse as ParseUiState.Valid).manifest
-
-        // Aviso breve no bloqueante si la batería tiene restricciones
         checkBatteryOptimizationNotice()
 
         viewModelScope.launch {
             try {
+                val currentRunning = downloadingDownloads.value.size
+                val limit = settingsManager.settings.value.maxConcurrentDownloads
+                val isQueue = currentRunning >= limit || settingsManager.settings.value.addDownloadBehavior == AddDownloadBehavior.ADD_TO_QUEUE_ONLY
+                val queuePos = queuedDownloads.value.size + 1
+
                 repository.enqueueDownload(code, manifest, customFileName)
-                _snackbarMessage.emit("Descarga iniciada: ${manifest.filename}")
-                if (settingsManager.settings.value.autoClearOnStart) {
-                    _codeText.value = ""
-                    _parseState.value = ParseUiState.Idle
+
+                val msg = if (isQueue) {
+                    "Agregada a la cola (#$queuePos)"
+                } else {
+                    "Descargando ${manifest.filename}"
                 }
+
+                _snackbarEvent.emit(AddDownloadSnackbarEvent(message = msg, actionLabel = "Ver", targetTab = 1))
+
+                // Siempre deja el campo vacío listo para el siguiente código
+                _codeText.value = ""
+                _parseState.value = ParseUiState.Idle
             } catch (e: Exception) {
-                _snackbarMessage.emit("Error al iniciar la descarga: ${e.message}")
+                _snackbarEvent.emit(AddDownloadSnackbarEvent(message = "Error: ${e.message}", actionLabel = null))
             }
         }
     }
 
-    fun pauseDownload(id: String) {
-        viewModelScope.launch {
-            repository.pauseDownload(id)
-        }
-    }
+    fun pauseDownload(id: String) = viewModelScope.launch { repository.pauseDownload(id) }
+    fun resumeDownload(id: String) = viewModelScope.launch { repository.resumeDownload(id) }
+    fun retryDownload(id: String) = viewModelScope.launch { repository.retryDownload(id) }
+    fun cancelDownload(id: String) = viewModelScope.launch { repository.cancelDownload(id) }
 
-    fun resumeDownload(id: String) {
-        viewModelScope.launch {
-            repository.resumeDownload(id)
-        }
-    }
+    fun pauseAll() = viewModelScope.launch { repository.pauseAll() }
+    fun resumeAll() = viewModelScope.launch { repository.resumeAll() }
 
-    fun retryDownload(id: String) {
-        viewModelScope.launch {
-            repository.retryDownload(id)
-        }
-    }
+    fun forceStartNow(id: String) = viewModelScope.launch { repository.forceStartNow(id) }
+    fun moveToTop(id: String) = viewModelScope.launch { repository.moveToTop(id) }
+    fun deleteCompletedItem(id: String) = viewModelScope.launch { repository.deleteDownload(id) }
+    fun clearAllCompleted() = viewModelScope.launch { repository.clearCompleted() }
 
-    fun cancelDownload(id: String) {
-        viewModelScope.launch {
-            repository.cancelDownload(id)
-            _snackbarMessage.emit("Descarga cancelada.")
-        }
-    }
-
-    fun deleteCompletedItem(id: String) {
-        viewModelScope.launch {
-            repository.deleteDownload(id)
-        }
-    }
-
-    fun clearAllCompleted() {
-        viewModelScope.launch {
-            repository.clearCompleted()
-            _snackbarMessage.emit("Archivos completados eliminados.")
-        }
-    }
-
-    // Lógica de Hoja de Bienvenida (Permisos y Batería)
+    // Bienvenida
     fun checkWelcomeSheetEligibility() {
         val s = settingsManager.settings.value
         if (s.dontShowWelcomeAgain) {
@@ -205,12 +216,10 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
             return
         }
 
-        // Si ya la vio, pero falta permiso y pasaron más de 3 días y NO hay descarga activa:
         val hasActive = activeDownloads.value.isNotEmpty()
         val now = System.currentTimeMillis()
         val threeDaysMs = 3 * 24 * 3600 * 1000L
         val canShowPeriodic = (now - s.lastWelcomeShownTime) > threeDaysMs
-
         val batteryRestricted = !BatteryUtils.isIgnoringBatteryOptimizations(getApplication())
 
         if (!hasActive && canShowPeriodic && batteryRestricted) {
@@ -219,22 +228,14 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    fun openWelcomeSheetManually() {
-        _showWelcomeSheet.value = true
-    }
-
+    fun openWelcomeSheetManually() { _showWelcomeSheet.value = true }
     fun dismissWelcomeSheet(dontShowAgain: Boolean = false) {
         _showWelcomeSheet.value = false
         settingsManager.setHasSeenWelcome(true)
         settingsManager.updateLastWelcomeShownTime()
-        if (dontShowAgain) {
-            settingsManager.setDontShowWelcomeAgain(true)
-        }
+        if (dontShowAgain) settingsManager.setDontShowWelcomeAgain(true)
     }
-
-    fun markAutoStartAcknowledged() {
-        settingsManager.setAutoStartAcknowledged(true)
-    }
+    fun markAutoStartAcknowledged() { settingsManager.setAutoStartAcknowledged(true) }
 
     private fun checkBatteryOptimizationNotice() {
         val context = getApplication<Application>()
@@ -242,7 +243,7 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
         if (!s.hasWarnedBatteryRestriction && !BatteryUtils.isIgnoringBatteryOptimizations(context)) {
             settingsManager.setHasWarnedBatteryRestriction(true)
             viewModelScope.launch {
-                _snackbarMessage.emit("Sugerencia: Permite la batería sin restricciones para no pausar con la pantalla apagada.")
+                _snackbarEvent.emit(AddDownloadSnackbarEvent("Sugerencia: Permite batería sin restricciones para no pausar con pantalla apagada.", null))
             }
         }
     }
@@ -252,6 +253,13 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
     fun setDynamicColor(enabled: Boolean) = settingsManager.setDynamicColor(enabled)
     fun setWifiOnly(enabled: Boolean) = settingsManager.setWifiOnly(enabled)
     fun setAutoRetry(enabled: Boolean) = settingsManager.setAutoRetry(enabled)
+    fun setMaxRetries(retries: Int) = settingsManager.setMaxRetries(retries)
+    fun setMaxConcurrentDownloads(limit: Int) = settingsManager.setMaxConcurrentDownloads(limit)
+    fun setMaxConcurrentParts(parts: Int) = settingsManager.setMaxConcurrentParts(parts)
+    fun setAddDownloadBehavior(behavior: AddDownloadBehavior) = settingsManager.setAddDownloadBehavior(behavior)
+    fun setAutoStartNext(enabled: Boolean) = settingsManager.setAutoStartNext(enabled)
+    fun setQueueSortOrder(order: QueueSortOrder) = settingsManager.setQueueSortOrder(order)
+    fun setSpeedLimit(limit: SpeedLimit) = settingsManager.setSpeedLimit(limit)
     fun setVibrateOnComplete(enabled: Boolean) = settingsManager.setVibrateOnComplete(enabled)
     fun setAutoClearOnStart(enabled: Boolean) = settingsManager.setAutoClearOnStart(enabled)
     fun setShowProgressNotifications(enabled: Boolean) = settingsManager.setShowProgressNotifications(enabled)

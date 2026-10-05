@@ -12,8 +12,17 @@ interface DownloadDao {
     @Query("SELECT * FROM downloads ORDER BY createdAt DESC")
     fun getAllDownloads(): Flow<List<DownloadEntity>>
 
-    @Query("SELECT * FROM downloads WHERE status IN ('QUEUED', 'DOWNLOADING', 'PAUSED', 'ERROR') ORDER BY createdAt DESC")
+    @Query("SELECT * FROM downloads WHERE status IN ('QUEUED', 'DOWNLOADING', 'PAUSING', 'PAUSED', 'ERROR') ORDER BY queuePosition ASC, createdAt ASC")
     fun getActiveDownloads(): Flow<List<DownloadEntity>>
+
+    @Query("SELECT * FROM downloads WHERE status IN ('DOWNLOADING', 'PAUSING') ORDER BY createdAt ASC")
+    fun getDownloadingDownloadsFlow(): Flow<List<DownloadEntity>>
+
+    @Query("SELECT * FROM downloads WHERE status = 'QUEUED' ORDER BY queuePosition ASC, createdAt ASC")
+    fun getQueuedDownloadsFlow(): Flow<List<DownloadEntity>>
+
+    @Query("SELECT * FROM downloads WHERE status = 'PAUSED' ORDER BY createdAt DESC")
+    fun getPausedDownloadsFlow(): Flow<List<DownloadEntity>>
 
     @Query("SELECT * FROM downloads WHERE status IN ('COMPLETED', 'COMPLETED_WARN_HASH') ORDER BY completedAt DESC")
     fun getCompletedDownloads(): Flow<List<DownloadEntity>>
@@ -21,8 +30,17 @@ interface DownloadDao {
     @Query("SELECT * FROM downloads WHERE id = :id")
     suspend fun getDownloadById(id: String): DownloadEntity?
 
-    @Query("SELECT * FROM downloads WHERE status IN ('DOWNLOADING', 'QUEUED')")
+    @Query("SELECT * FROM downloads WHERE status IN ('DOWNLOADING', 'PAUSING', 'QUEUED')")
     suspend fun getUnfinishedDownloads(): List<DownloadEntity>
+
+    @Query("SELECT * FROM downloads WHERE status = 'DOWNLOADING'")
+    suspend fun getCurrentlyDownloading(): List<DownloadEntity>
+
+    @Query("SELECT * FROM downloads WHERE status = 'QUEUED' ORDER BY queuePosition ASC, createdAt ASC")
+    suspend fun getQueuedDownloads(): List<DownloadEntity>
+
+    @Query("SELECT MAX(queuePosition) FROM downloads")
+    suspend fun getMaxQueuePosition(): Int?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(download: DownloadEntity)
@@ -41,8 +59,11 @@ interface DownloadDao {
         etaSeconds: Long
     )
 
-    @Query("UPDATE downloads SET status = :status, errorMessage = :error WHERE id = :id")
-    suspend fun updateStatus(id: String, status: String, error: String? = null)
+    @Query("UPDATE downloads SET status = :status, errorMessage = :error, pausedByNetwork = :pausedByNetwork WHERE id = :id")
+    suspend fun updateStatus(id: String, status: String, error: String? = null, pausedByNetwork: Boolean = false)
+
+    @Query("UPDATE downloads SET queuePosition = :position WHERE id = :id")
+    suspend fun updateQueuePosition(id: String, position: Int)
 
     @Query("UPDATE downloads SET status = :status, errorMessage = :error, completedAt = :completedAt, speedBps = 0, etaSeconds = 0 WHERE id = :id")
     suspend fun markFailed(id: String, status: String, error: String, completedAt: Long)

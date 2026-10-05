@@ -14,6 +14,9 @@ class DownloadRepository(private val context: Context) {
 
     val allDownloads: Flow<List<DownloadEntity>> = downloadDao.getAllDownloads()
     val activeDownloads: Flow<List<DownloadEntity>> = downloadDao.getActiveDownloads()
+    val downloadingDownloads: Flow<List<DownloadEntity>> = downloadDao.getDownloadingDownloadsFlow()
+    val queuedDownloads: Flow<List<DownloadEntity>> = downloadDao.getQueuedDownloadsFlow()
+    val pausedDownloads: Flow<List<DownloadEntity>> = downloadDao.getPausedDownloadsFlow()
     val completedDownloads: Flow<List<DownloadEntity>> = downloadDao.getCompletedDownloads()
 
     suspend fun enqueueDownload(
@@ -23,6 +26,7 @@ class DownloadRepository(private val context: Context) {
     ): String {
         val downloadId = UUID.randomUUID().toString()
         val finalFileName = customFileName?.ifBlank { null } ?: manifest.filename
+        val maxPos = downloadDao.getMaxQueuePosition() ?: 0
 
         val entity = DownloadEntity(
             id = downloadId,
@@ -36,12 +40,14 @@ class DownloadRepository(private val context: Context) {
             savedPath = "Download/Chunk/$finalFileName",
             code = code,
             sha256Expected = manifest.sha256,
+            queuePosition = maxPos + 1,
+            pausedByNetwork = false,
             createdAt = System.currentTimeMillis()
         )
 
         downloadDao.insert(entity)
 
-        // Iniciar el Foreground Service nativo con WakeLock y WifiLock
+        // Delegar arranque o encolado al DownloadService
         DownloadService.startDownload(context, downloadId)
 
         return downloadId
@@ -49,22 +55,40 @@ class DownloadRepository(private val context: Context) {
 
     suspend fun pauseDownload(id: String) {
         DownloadService.pauseDownload(context, id)
-        downloadDao.updateStatus(id, DownloadState.PAUSED.name, null)
     }
 
     suspend fun resumeDownload(id: String) {
-        downloadDao.updateStatus(id, DownloadState.QUEUED.name, null)
         DownloadService.resumeDownload(context, id)
     }
 
     suspend fun retryDownload(id: String) {
-        downloadDao.updateStatus(id, DownloadState.QUEUED.name, null)
-        DownloadService.startDownload(context, id)
+        DownloadService.retryDownload(context, id)
     }
 
     suspend fun cancelDownload(id: String) {
         DownloadService.cancelDownload(context, id)
-        downloadDao.updateStatus(id, DownloadState.CANCELLED.name, null)
+    }
+
+    suspend fun pauseAll() {
+        DownloadService.pauseAll(context)
+    }
+
+    suspend fun resumeAll() {
+        DownloadService.resumeAll(context)
+    }
+
+    suspend fun forceStartNow(id: String) {
+        DownloadService.forceStartNow(context, id)
+    }
+
+    suspend fun moveToTop(id: String) {
+        DownloadService.moveToTop(context, id)
+    }
+
+    suspend fun reorderQueue(orderedIds: List<String>) {
+        for ((index, id) in orderedIds.withIndex()) {
+            downloadDao.updateQueuePosition(id, index)
+        }
     }
 
     suspend fun deleteDownload(id: String) {
@@ -76,14 +100,7 @@ class DownloadRepository(private val context: Context) {
         downloadDao.deleteCompleted()
     }
 
-    suspend fun clearHistory() {
-        downloadDao.deleteAll()
-    }
-
     suspend fun resumePendingDownloadsOnStartup() {
-        val pending = downloadDao.getUnfinishedDownloads()
-        for (item in pending) {
-            DownloadService.startDownload(context, item.id)
-        }
+        DownloadService.startDownload(context, "")
     }
 }
