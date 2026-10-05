@@ -163,9 +163,18 @@ object MoodleCodeParser {
             throw IllegalArgumentException("El tamaño especificado en el manifiesto no puede ser negativo.")
         }
 
-        val sha256 = root.optString("sha256").trim().takeIf { it.isNotBlank() }
-        if (sha256 != null && !sha256.matches(Regex("^[0-9a-fA-F]{64}$"))) {
-            throw IllegalArgumentException("El SHA-256 del manifiesto no tiene un formato válido.")
+        val sha256 = if (root.has("sha256") && !root.isNull("sha256")) {
+            val rawSha = root.optString("sha256", "").trim()
+            if (rawSha.isNotBlank() && rawSha != "null" && rawSha != "undefined") {
+                if (!rawSha.matches(Regex("^[0-9a-fA-F]{64}$"))) {
+                    throw IllegalArgumentException("El SHA-256 del manifiesto no tiene un formato válido.")
+                }
+                rawSha.lowercase()
+            } else {
+                null
+            }
+        } else {
+            null
         }
         val created = root.optLong("created", -1L).takeIf { it > 0 }
 
