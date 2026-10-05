@@ -20,4 +20,11 @@ object FileUtils {
         if (extension.isEmpty()) return "application/octet-stream"
         return MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension) ?: "application/octet-stream"
     }
+
+    fun formatDuration(seconds: Long): String {
+        if (seconds <= 0) return "0s"
+        val m = seconds / 60
+        val s = seconds % 60
+        return if (m > 0) "${m}m ${s}s" else "${s}s"
+    }
 }

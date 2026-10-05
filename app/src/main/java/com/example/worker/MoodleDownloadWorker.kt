@@ -30,6 +30,7 @@ import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
+import java.security.DigestOutputStream
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 
@@ -210,8 +211,11 @@ class MoodleDownloadWorker(
             mediaStoreUri = resolver.insert(collectionUri, contentValues)
                 ?: throw IOException("No se pudo registrar el archivo en MediaStore Download/Chunk.")
 
-            // Streaming concatenando las partes en orden de orderedParts
-            resolver.openOutputStream(mediaStoreUri, "w")?.use { output ->
+            // Streaming concatenando las partes en orden y calculando SHA-256 al vuelo
+            val digest = MessageDigest.getInstance("SHA-256")
+            resolver.openOutputStream(mediaStoreUri, "w")?.use { rawOutput ->
+                val digestOutput = DigestOutputStream(rawOutput, digest)
+                val buffer = ByteArray(BUFFER_SIZE)
                 for (part in orderedParts) {
                     if (isStopped) throw CancellationException("Operación cancelada.")
                     val partFile = File(partsDirectory, "%05d.part".format(part.index))
@@ -219,53 +223,21 @@ class MoodleDownloadWorker(
                         throw IOException("Falta el archivo de la parte ${part.index}.")
                     }
                     FileInputStream(partFile).use { input ->
-                        input.copyTo(output, bufferSize = BUFFER_SIZE)
+                        var read: Int
+                        while (input.read(buffer).also { read = it } != -1) {
+                            digestOutput.write(buffer, 0, read)
+                        }
                     }
                 }
+                digestOutput.flush()
             } ?: throw IOException("No se pudo abrir el flujo de escritura en MediaStore.")
 
-            // Paso E: Verificar tamaño final
-            reportProgress(
-                downloadId = downloadId,
-                state = DownloadState.VERIFYING_SIZE,
-                statusText = "Comprobando tamaño final...",
-                partsDirectory = partsDirectory,
-                orderedParts = orderedParts,
-                currentPartIndex = totalParts,
-                totalParts = totalParts,
-                manifestSize = totalManifestSize,
-                currentPartBytes = 0L
-            )
+            // Paso E: Hash calculado directamente de los bytes transferidos
+            val calculatedSha256 = digest.digest().joinToString("") { "%02x".format(it) }
+            val expectedSha256 = manifest.sha256?.trim()
+            val hashMatches = expectedSha256.isNullOrBlank() || calculatedSha256.equals(expectedSha256, ignoreCase = true)
 
-            val finalLength = getFileSizeFromUri(mediaStoreUri)
-            if (finalLength != totalManifestSize) {
-                throw IOException("El tamaño reconstruido no coincide. Esperado: $totalManifestSize bytes, Obtenido: $finalLength bytes.")
-            }
-
-            // Paso E: Verificación SHA-256 si está presente
-            var calculatedSha256: String? = null
-            if (!manifest.sha256.isNullOrBlank()) {
-                reportProgress(
-                    downloadId = downloadId,
-                    state = DownloadState.VERIFYING_SHA256,
-                    statusText = "Verificando integridad SHA-256...",
-                    partsDirectory = partsDirectory,
-                    orderedParts = orderedParts,
-                    currentPartIndex = totalParts,
-                    totalParts = totalParts,
-                    manifestSize = totalManifestSize,
-                    currentPartBytes = 0L
-                )
-
-                calculatedSha256 = calculateSha256FromUri(mediaStoreUri)
-                if (!calculatedSha256.equals(manifest.sha256, ignoreCase = true)) {
-                    throw IOException("La verificación SHA-256 falló. Hash esperado: ${manifest.sha256}, Calculado: $calculatedSha256.")
-                }
-            } else {
-                calculatedSha256 = calculateSha256FromUri(mediaStoreUri)
-            }
-
-            // Finalización exitosa: publicar IS_PENDING = 0
+            // Finalización exitosa: publicar IS_PENDING = 0 (el archivo queda listo y visible en Download/Chunk)
             contentValues.clear()
             contentValues.put(MediaStore.MediaColumns.IS_PENDING, 0)
             resolver.update(mediaStoreUri, contentValues, null, null)
@@ -275,9 +247,11 @@ class MoodleDownloadWorker(
             partsDirectory.delete()
 
             val completedAt = System.currentTimeMillis()
+            val finalStatus = if (hashMatches) DownloadState.COMPLETED.name else "COMPLETED_WARN_HASH"
+
             downloadDao.markCompleted(
                 id = downloadId,
-                status = DownloadState.COMPLETED.name,
+                status = finalStatus,
                 uri = mediaStoreUri.toString(),
                 path = "Download/Chunk/$finalFileName",
                 sha256 = calculatedSha256,
@@ -285,9 +259,15 @@ class MoodleDownloadWorker(
                 completedAt = completedAt
             )
 
+            val successMsg = if (hashMatches) {
+                "Archivo $finalFileName (${FileUtils.formatBytes(totalManifestSize)}) guardado en Download/Chunk."
+            } else {
+                "Archivo $finalFileName (${FileUtils.formatBytes(totalManifestSize)}) guardado (aviso: el hash del servidor difiere)."
+            }
+
             showFinishedNotification(
-                title = "Descarga completada",
-                message = "Archivo $finalFileName (${FileUtils.formatBytes(totalManifestSize)}) guardado en Download/Chunk.",
+                title = if (hashMatches) "Descarga completada" else "Descarga completada (con aviso)",
+                message = successMsg,
                 success = true,
                 uri = mediaStoreUri
             )

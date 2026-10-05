@@ -8,60 +8,63 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 
 private val DarkColorScheme = darkColorScheme(
-    primary = PrimaryDark,
-    onPrimary = OnPrimaryDark,
-    primaryContainer = PrimaryContainerDark,
-    onPrimaryContainer = OnPrimaryContainerDark,
-    secondary = SecondaryDark,
-    onSecondary = OnSecondaryDark,
-    secondaryContainer = SecondaryContainerDark,
-    onSecondaryContainer = OnSecondaryContainerDark,
-    tertiary = TertiaryDark,
-    onTertiary = OnTertiaryDark,
-    tertiaryContainer = TertiaryContainerDark,
-    onTertiaryContainer = OnTertiaryContainerDark,
-    background = BackgroundDark,
-    onBackground = OnBackgroundDark,
-    surface = SurfaceDark,
-    onSurface = OnSurfaceDark,
-    surfaceVariant = SurfaceVariantDark,
-    onSurfaceVariant = OnSurfaceVariantDark,
-    outline = OutlineDark,
-    error = ErrorDark,
-    onError = OnErrorDark
+    primary = TechCyanPrimary,
+    onPrimary = Color(0xFF00363F),
+    primaryContainer = Color(0xFF004E5B),
+    onPrimaryContainer = Color(0xFFA6EEFF),
+    secondary = TechCyanGlow,
+    onSecondary = Color(0xFF00344D),
+    secondaryContainer = Color(0xFF004C6E),
+    onSecondaryContainer = Color(0xFFC7E7FF),
+    tertiary = TechBlueSecondary,
+    onTertiary = Color(0xFFFFFFFF),
+    tertiaryContainer = TechBlueContainer,
+    onTertiaryContainer = Color(0xFFD6E3FF),
+    background = TechDarkBackground,
+    onBackground = Color(0xFFF1F5F9),
+    surface = TechDarkSurface,
+    onSurface = Color(0xFFF1F5F9),
+    surfaceVariant = TechDarkSurfaceVariant,
+    onSurfaceVariant = Color(0xFF94A3B8),
+    outline = TechDarkBorder,
+    outlineVariant = Color(0xFF1E293B),
+    error = TechRoseError,
+    onError = Color(0xFFFFFFFF)
 )
 
 private val LightColorScheme = lightColorScheme(
-    primary = PrimaryLight,
-    onPrimary = OnPrimaryLight,
-    primaryContainer = PrimaryContainerLight,
-    onPrimaryContainer = OnPrimaryContainerLight,
-    secondary = SecondaryLight,
-    onSecondary = OnSecondaryLight,
-    secondaryContainer = SecondaryContainerLight,
-    onSecondaryContainer = OnSecondaryContainerLight,
-    tertiary = TertiaryLight,
-    onTertiary = OnTertiaryLight,
-    tertiaryContainer = TertiaryContainerLight,
-    onTertiaryContainer = OnTertiaryContainerLight,
-    background = BackgroundLight,
-    onBackground = OnBackgroundLight,
-    surface = SurfaceLight,
-    onSurface = OnSurfaceLight,
-    surfaceVariant = SurfaceVariantLight,
-    onSurfaceVariant = OnSurfaceVariantLight,
-    outline = OutlineLight,
-    error = ErrorLight,
-    onError = OnErrorLight
+    primary = TechLightPrimary,
+    onPrimary = Color(0xFFFFFFFF),
+    primaryContainer = Color(0xFFC3E8FF),
+    onPrimaryContainer = Color(0xFF001E2E),
+    secondary = TechLightSecondary,
+    onSecondary = Color(0xFFFFFFFF),
+    secondaryContainer = Color(0xFFDCE2FF),
+    onSecondaryContainer = Color(0xFF00184A),
+    tertiary = TechCyanPrimary,
+    onTertiary = Color(0xFF00363F),
+    tertiaryContainer = Color(0xFFA6EEFF),
+    onTertiaryContainer = Color(0xFF004E5B),
+    background = TechLightBackground,
+    onBackground = Color(0xFF0F172A),
+    surface = TechLightSurface,
+    onSurface = Color(0xFF0F172A),
+    surfaceVariant = TechLightSurfaceVariant,
+    onSurfaceVariant = Color(0xFF475569),
+    outline = TechLightBorder,
+    outlineVariant = Color(0xFFE2E8F0),
+    error = TechRoseError,
+    onError = Color(0xFFFFFFFF)
 )
 
 @Composable
 fun MyApplicationTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
-    dynamicColor: Boolean = true,
+    dynamicColor: Boolean = false,
     content: @Composable () -> Unit,
 ) {
     val colorScheme = when {

@@ -14,7 +14,7 @@ enum class ThemeMode {
 
 data class AppSettings(
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
-    val dynamicColor: Boolean = true,
+    val dynamicColor: Boolean = false,
     val wifiOnly: Boolean = false,
     val autoRetry: Boolean = true,
     val vibrateOnComplete: Boolean = true,
@@ -32,7 +32,7 @@ class SettingsManager(context: Context) {
     private fun loadSettings(): AppSettings {
         val themeStr = prefs.getString(KEY_THEME_MODE, ThemeMode.SYSTEM.name) ?: ThemeMode.SYSTEM.name
         val theme = try { ThemeMode.valueOf(themeStr) } catch (_: Exception) { ThemeMode.SYSTEM }
-        val dynamic = prefs.getBoolean(KEY_DYNAMIC_COLOR, true)
+        val dynamic = prefs.getBoolean(KEY_DYNAMIC_COLOR, false)
         val wifi = prefs.getBoolean(KEY_WIFI_ONLY, false)
         val retry = prefs.getBoolean(KEY_AUTO_RETRY, true)
         val vibrate = prefs.getBoolean(KEY_VIBRATE, true)
