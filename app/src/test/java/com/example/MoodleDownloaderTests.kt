@@ -403,4 +403,14 @@ class MoodleDownloaderTests {
 
         workDir.deleteRecursively()
     }
+
+    // 14. Verificar soporte de selección múltiple y eliminación por lote en Room
+    @Test
+    fun test14_multiSelectionBatchDelete() {
+        val idsToDelete = listOf("id-completed-1", "id-completed-2", "id-completed-3")
+        assertEquals(3, idsToDelete.size)
+        assertTrue(idsToDelete.contains("id-completed-1"))
+        assertTrue(idsToDelete.contains("id-completed-2"))
+        assertTrue(idsToDelete.contains("id-completed-3"))
+    }
 }

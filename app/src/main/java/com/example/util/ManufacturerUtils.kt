@@ -10,7 +10,7 @@ import android.provider.Settings
 object ManufacturerUtils {
 
     fun hasManufacturerAutoStart(): Boolean {
-        val manufacturer = Build.MANUFACTURER.lowercase()
+        val manufacturer = Build.MANUFACTURER?.lowercase() ?: ""
         return manufacturer.contains("xiaomi") ||
                 manufacturer.contains("redmi") ||
                 manufacturer.contains("oppo") ||
@@ -23,7 +23,7 @@ object ManufacturerUtils {
     }
 
     fun openAutoStartSettings(context: Context) {
-        val manufacturer = Build.MANUFACTURER.lowercase()
+        val manufacturer = Build.MANUFACTURER?.lowercase() ?: ""
         val intents = mutableListOf<Intent>()
 
         when {

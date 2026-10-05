@@ -96,11 +96,22 @@ class DownloadRepository(private val context: Context) {
         downloadDao.deleteById(id)
     }
 
+    suspend fun deleteSelectedCompleted(ids: List<String>) {
+        downloadDao.deleteByIds(ids)
+    }
+
     suspend fun clearCompleted() {
         downloadDao.deleteCompleted()
     }
 
     suspend fun resumePendingDownloadsOnStartup() {
-        DownloadService.startDownload(context, "")
+        try {
+            val pending = downloadDao.getUnfinishedDownloads()
+            for (item in pending) {
+                if (item.status == DownloadState.DOWNLOADING.name || item.status == DownloadState.PAUSING.name) {
+                    downloadDao.updateStatus(item.id, DownloadState.QUEUED.name, null, pausedByNetwork = false)
+                }
+            }
+        } catch (_: Exception) {}
     }
 }

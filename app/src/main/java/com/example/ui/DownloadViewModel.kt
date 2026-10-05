@@ -114,8 +114,9 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
     init {
         viewModelScope.launch {
             repository.resumePendingDownloadsOnStartup()
+            delay(400)
+            checkWelcomeSheetEligibility()
         }
-        checkWelcomeSheetEligibility()
     }
 
     fun onCodeChanged(newCode: String) {
@@ -201,6 +202,10 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
     fun forceStartNow(id: String) = viewModelScope.launch { repository.forceStartNow(id) }
     fun moveToTop(id: String) = viewModelScope.launch { repository.moveToTop(id) }
     fun deleteCompletedItem(id: String) = viewModelScope.launch { repository.deleteDownload(id) }
+    fun deleteSelectedCompleted(ids: List<String>) = viewModelScope.launch {
+        repository.deleteSelectedCompleted(ids)
+        _snackbarEvent.emit(AddDownloadSnackbarEvent("${ids.size} archivos eliminados", null))
+    }
     fun clearAllCompleted() = viewModelScope.launch { repository.clearCompleted() }
 
     // Bienvenida

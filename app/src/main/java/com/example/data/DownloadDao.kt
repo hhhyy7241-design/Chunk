@@ -82,6 +82,9 @@ interface DownloadDao {
     @Query("DELETE FROM downloads WHERE id = :id")
     suspend fun deleteById(id: String)
 
+    @Query("DELETE FROM downloads WHERE id IN (:ids)")
+    suspend fun deleteByIds(ids: List<String>)
+
     @Query("DELETE FROM downloads")
     suspend fun deleteAll()
 

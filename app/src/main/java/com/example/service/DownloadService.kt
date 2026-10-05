@@ -163,6 +163,9 @@ class DownloadService : Service() {
         val downloadId = intent?.getStringExtra(EXTRA_DOWNLOAD_ID)
         Log.d(TAG, "onStartCommand: action=$action, downloadId=$downloadId")
 
+        // Asegurar startForeground inmediato y sincrónico para cumplir el contrato de Android 8+
+        ensureForegroundStarted()
+
         serviceScope.launch {
             when (action) {
                 ACTION_START -> {
@@ -1051,30 +1054,47 @@ class DownloadService : Service() {
         )
     }
 
+    private fun ensureForegroundStarted() {
+        try {
+            val notification = NotificationCompat.Builder(this, CHANNEL_PROGRESS_ID)
+                .setContentTitle("Download Chunk")
+                .setContentText("Servicio de descargas activo")
+                .setSmallIcon(android.R.drawable.stat_sys_download)
+                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .setOngoing(true)
+                .build()
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(NOTIFICATION_SUMMARY_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+            } else {
+                startForeground(NOTIFICATION_SUMMARY_ID, notification)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "ensureForegroundStarted error: ${e.message}")
+        }
+    }
+
     private fun showCompletedNotification(fileName: String, uri: Uri) {
         val settings = settingsManager.settings.value
 
-        val openIntent = Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(uri, contentResolver.getType(uri) ?: "*/*")
+        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+            type = contentResolver.getType(uri) ?: "*/*"
+            putExtra(Intent.EXTRA_STREAM, uri)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
         }
-        val pendingOpen = PendingIntent.getActivity(
+        val pendingShare = PendingIntent.getActivity(
             this,
             fileName.hashCode(),
-            openIntent,
+            Intent.createChooser(shareIntent, "Compartir $fileName"),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
-
-        val isApk = fileName.endsWith(".apk", ignoreCase = true)
-        val actionLabel = if (isApk) "Instalar" else "Abrir"
 
         val builder = NotificationCompat.Builder(this, CHANNEL_COMPLETED_ID)
             .setContentTitle("Descarga completada")
             .setContentText(fileName)
             .setSmallIcon(android.R.drawable.stat_sys_download_done)
             .setAutoCancel(true)
-            .setContentIntent(pendingOpen)
-            .addAction(android.R.drawable.ic_menu_view, actionLabel, pendingOpen)
+            .addAction(android.R.drawable.ic_menu_share, "Compartir", pendingShare)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
 
         if (settings.soundOnComplete) {
