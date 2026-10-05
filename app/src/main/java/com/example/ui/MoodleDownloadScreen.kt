@@ -8,10 +8,7 @@ import android.os.Build
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
-import android.provider.Settings
 import android.widget.Toast
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.RepeatMode
@@ -19,9 +16,10 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -53,7 +51,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Android
+import androidx.compose.material.icons.filled.BatteryChargingFull
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.ColorLens
 import androidx.compose.material.icons.filled.ContentPaste
@@ -65,6 +65,9 @@ import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderZip
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.LightMode
+import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Settings
@@ -73,12 +76,14 @@ import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Vibration
 import androidx.compose.material.icons.filled.VideoFile
+import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CenterAlignedTopAppBar
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -136,7 +141,9 @@ import com.example.ui.theme.ElectricCyan
 import com.example.ui.theme.ErrorRose
 import com.example.ui.theme.SuccessGreen
 import com.example.ui.theme.WarningAmber
+import com.example.util.BatteryUtils
 import com.example.util.FileUtils
+import com.example.util.ManufacturerUtils
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
@@ -153,24 +160,15 @@ fun MoodleDownloadScreen(
 
     val codeText by viewModel.codeText.collectAsStateWithLifecycle()
     val parseState by viewModel.parseState.collectAsStateWithLifecycle()
-    val activeDownloads by viewModel.activeDownloadsUi.collectAsStateWithLifecycle()
-    val allDownloads by viewModel.allDownloads.collectAsStateWithLifecycle()
+    val activeDownloads by viewModel.activeDownloads.collectAsStateWithLifecycle()
+    val completedDownloads by viewModel.completedDownloads.collectAsStateWithLifecycle()
     val settings by viewModel.settings.collectAsStateWithLifecycle()
+    val showWelcomeSheet by viewModel.showWelcomeSheet.collectAsStateWithLifecycle()
 
     var selectedTab by remember { mutableIntStateOf(0) }
     var showSettingsSheet by remember { mutableStateOf(false) }
 
     val activeListState = rememberLazyListState()
-
-    val notificationLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission()
-    ) { _ -> }
-
-    LaunchedEffect(Unit) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            notificationLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
-        }
-    }
 
     LaunchedEffect(Unit) {
         viewModel.snackbarMessage.collectLatest { msg ->
@@ -189,7 +187,6 @@ fun MoodleDownloadScreen(
                 onOpenCompleted = {
                     selectedTab = 1
                     scope.launch {
-                        // Desplazar a la sección completados
                         val targetIndex = if (activeDownloads.isEmpty()) 0 else activeDownloads.size + 1
                         activeListState.animateScrollToItem(targetIndex)
                     }
@@ -221,7 +218,6 @@ fun MoodleDownloadScreen(
                     codeText = codeText,
                     parseState = parseState,
                     onCodeChanged = { viewModel.onCodeChanged(it) },
-                    onValidate = { viewModel.validateCurrentCode() },
                     onStartDownload = {
                         viewModel.startDownload()
                         selectedTab = 1
@@ -229,15 +225,28 @@ fun MoodleDownloadScreen(
                 )
                 1 -> ActiveTasksTab(
                     activeDownloads = activeDownloads,
-                    completedDownloads = allDownloads,
+                    completedDownloads = completedDownloads,
                     listState = activeListState,
+                    onPause = { viewModel.pauseDownload(it) },
+                    onResume = { viewModel.resumeDownload(it) },
+                    onRetry = { viewModel.retryDownload(it) },
                     onCancel = { viewModel.cancelDownload(it) },
-                    onDeleteCompleted = { viewModel.deleteHistoryItem(it) },
-                    onClearCompleted = { viewModel.clearAllHistory() },
+                    onDeleteCompleted = { viewModel.deleteCompletedItem(it) },
+                    onClearCompleted = { viewModel.clearAllCompleted() },
                     onGoToDownload = { selectedTab = 0 }
                 )
             }
         }
+    }
+
+    if (showWelcomeSheet) {
+        WelcomePermissionsBottomSheet(
+            autoStartAcknowledged = settings.autoStartAcknowledged,
+            onAutoStartAcknowledged = { viewModel.markAutoStartAcknowledged() },
+            onDismiss = { dontShowAgain ->
+                viewModel.dismissWelcomeSheet(dontShowAgain)
+            }
+        )
     }
 
     if (showSettingsSheet) {
@@ -249,6 +258,12 @@ fun MoodleDownloadScreen(
             onAutoRetryChange = { viewModel.setAutoRetry(it) },
             onVibrateChange = { viewModel.setVibrateOnComplete(it) },
             onAutoClearChange = { viewModel.setAutoClearOnStart(it) },
+            onShowProgressNotifsChange = { viewModel.setShowProgressNotifications(it) },
+            onSoundOnCompleteChange = { viewModel.setSoundOnComplete(it) },
+            onOpenWelcome = {
+                showSettingsSheet = false
+                viewModel.openWelcomeSheetManually()
+            },
             onDismiss = { showSettingsSheet = false }
         )
     }
@@ -266,7 +281,6 @@ private fun TopAppBar(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                // Emblema tecnológico moderno con degradado
                 Box(
                     modifier = Modifier
                         .size(36.dp)
@@ -293,7 +307,6 @@ private fun TopAppBar(
             }
         },
         actions = {
-            // Icono de carpeta que lleva a la sección "Completados"
             IconButton(
                 onClick = onOpenCompleted,
                 modifier = Modifier
@@ -328,6 +341,7 @@ private fun TopAppBar(
 
 /**
  * Barra flotante en forma de píldora con efecto cristal y fondos sólidos invertidos.
+ * Sin efecto ripple pegado y controlado por una única variable.
  */
 @Composable
 fun FloatingPillNavigationBar(
@@ -351,10 +365,10 @@ fun FloatingPillNavigationBar(
                     spotColor = ElectricCyan.copy(alpha = 0.25f)
                 ),
             shape = RoundedCornerShape(32.dp),
-            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
+            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
             border = androidx.compose.foundation.BorderStroke(
                 width = 1.dp,
-                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)
+                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f)
             )
         ) {
             Row(
@@ -394,7 +408,7 @@ private fun PillNavButton(
     isDark: Boolean,
     onClick: () -> Unit
 ) {
-    // Fondo sólido invertido en la pestaña activa
+    // Fondo sólido invertido con alto contraste
     val targetBg = if (isSelected) {
         if (isDark) Color.White else Color(0xFF0F172A)
     } else {
@@ -404,11 +418,11 @@ private fun PillNavButton(
     val targetFg = if (isSelected) {
         if (isDark) Color(0xFF0F172A) else Color.White
     } else {
-        MaterialTheme.colorScheme.onSurfaceVariant
+        if (isDark) Color(0xFF94A3B8) else Color(0xFF475569)
     }
 
-    val bg by animateColorAsState(targetValue = targetBg, animationSpec = tween(200), label = "pill_bg")
-    val fg by animateColorAsState(targetValue = targetFg, animationSpec = tween(200), label = "pill_fg")
+    val bg by animateColorAsState(targetValue = targetBg, animationSpec = tween(180), label = "pill_bg")
+    val fg by animateColorAsState(targetValue = targetFg, animationSpec = tween(180), label = "pill_fg")
 
     Box(
         modifier = Modifier
@@ -420,7 +434,7 @@ private fun PillNavButton(
                 indication = null,
                 onClick = onClick
             )
-            .padding(horizontal = 20.dp, vertical = 10.dp),
+            .padding(horizontal = 22.dp, vertical = 10.dp),
         contentAlignment = Alignment.Center
     ) {
         Row(
@@ -442,7 +456,6 @@ private fun PillNavButton(
                 color = fg
             )
 
-            // El badge de "En curso" solo aparece si hay descargas activas
             if (badge != null) {
                 Spacer(modifier = Modifier.width(6.dp))
                 Box(
@@ -467,20 +480,21 @@ private fun PillNavButton(
 /**
  * Pantalla Descargar:
  * Título grande "Pega tu código. Descarga en partes.",
- * caja con el campo, botón "Pegar" dentro, y dos botones en una sola línea:
- * "Verificar" y "Descargar" (principal con degradado).
+ * caja con el campo y botón "Pegar" dentro.
+ * Sin botón "Verificar": se valida solo con debounce.
+ * Botón "Descargar" ocupa todo el ancho con degradado, deshabilitado hasta ser válido.
  */
 @Composable
 fun DownloadInputTab(
     codeText: String,
     parseState: ParseUiState,
     onCodeChanged: (String) -> Unit,
-    onValidate: () -> Unit,
     onStartDownload: () -> Unit
 ) {
     val context = LocalContext.current
     val isValid = parseState is ParseUiState.Valid
     val isInvalid = parseState is ParseUiState.Invalid
+    val isValidating = parseState is ParseUiState.Validating
 
     LazyColumn(
         modifier = Modifier
@@ -488,7 +502,6 @@ fun DownloadInputTab(
             .padding(horizontal = 20.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(20.dp)
     ) {
-        // Título grande de bienvenida
         item {
             Spacer(modifier = Modifier.height(6.dp))
             Text(
@@ -509,7 +522,7 @@ fun DownloadInputTab(
             )
         }
 
-        // Caja de entrada con esquinas muy redondeadas (26px) y botón Pegar dentro
+        // Caja de entrada con campo, botón pegar y estados de validación integrados
         item {
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -532,15 +545,33 @@ fun DownloadInputTab(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            text = "Código Moodle",
-                            fontFamily = DmSansFontFamily,
-                            fontWeight = FontWeight.SemiBold,
-                            fontSize = 14.sp,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text(
+                                text = "Código Moodle",
+                                fontFamily = DmSansFontFamily,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 14.sp,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
 
-                        // Botón Pegar integrado dentro de la caja
+                            // Estados dentro de la caja
+                            if (isValidating) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(14.dp),
+                                    strokeWidth = 2.dp,
+                                    color = ElectricCyan
+                                )
+                            } else if (isValid) {
+                                Icon(
+                                    imageVector = Icons.Default.CheckCircle,
+                                    contentDescription = "Código Válido",
+                                    tint = SuccessGreen,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                        }
+
+                        // Botón Pegar dentro de la caja
                         Button(
                             onClick = {
                                 val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
@@ -610,122 +641,82 @@ fun DownloadInputTab(
                         )
                     )
 
-                    // Dos botones en una sola línea: "Verificar" y "Descargar" (principal con degradado)
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        OutlinedButton(
-                            onClick = onValidate,
-                            modifier = Modifier
-                                .weight(1f)
-                                .defaultMinSize(minHeight = 48.dp),
-                            shape = RoundedCornerShape(18.dp),
-                            enabled = codeText.isNotBlank()
+                    // Mensaje de error claro debajo del campo en rojo suave
+                    if (isInvalid && codeText.isNotBlank()) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
+                            Icon(Icons.Default.ErrorOutline, contentDescription = null, tint = ErrorRose, modifier = Modifier.size(16.dp))
                             Text(
-                                text = "Verificar",
+                                text = (parseState as ParseUiState.Invalid).message,
                                 fontFamily = DmSansFontFamily,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 14.sp
+                                fontSize = 12.sp,
+                                color = ErrorRose
                             )
                         }
+                    }
 
-                        // Botón principal con degradado eléctrico
-                        Box(
-                            modifier = Modifier
-                                .weight(1.3f)
-                                .defaultMinSize(minHeight = 48.dp)
-                                .clip(RoundedCornerShape(18.dp))
-                                .background(if (codeText.isNotBlank()) BrandGradient else Brush.linearGradient(listOf(MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.colorScheme.surfaceVariant)))
-                                .clickable(
-                                    enabled = codeText.isNotBlank(),
-                                    onClick = onStartDownload
+                    // Botón "Descargar" ocupa todo el ancho, con degradado, deshabilitado hasta que sea válido
+                    val manifestSizeText = if (isValid) {
+                        " • ${FileUtils.formatBytes((parseState as ParseUiState.Valid).manifest.size)}"
+                    } else ""
+
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .defaultMinSize(minHeight = 50.dp)
+                            .clip(RoundedCornerShape(18.dp))
+                            .background(
+                                if (isValid) BrandGradient
+                                else Brush.linearGradient(
+                                    listOf(
+                                        MaterialTheme.colorScheme.surfaceVariant,
+                                        MaterialTheme.colorScheme.surfaceVariant
+                                    )
                                 )
-                                .padding(horizontal = 16.dp, vertical = 12.dp)
-                                .testTag("start_download_button"),
-                            contentAlignment = Alignment.Center
+                            )
+                            .clickable(
+                                enabled = isValid,
+                                onClick = onStartDownload
+                            )
+                            .padding(vertical = 14.dp)
+                            .testTag("start_download_button"),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
                         ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.Center
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Download,
-                                    contentDescription = null,
-                                    tint = if (codeText.isNotBlank()) Color.White else MaterialTheme.colorScheme.outline,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(
-                                    text = "Descargar",
-                                    fontFamily = DmSansFontFamily,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 14.sp,
-                                    color = if (codeText.isNotBlank()) Color.White else MaterialTheme.colorScheme.outline
-                                )
-                            }
+                            Icon(
+                                imageVector = Icons.Default.Download,
+                                contentDescription = null,
+                                tint = if (isValid) Color.White else MaterialTheme.colorScheme.outline,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Descargar$manifestSizeText",
+                                fontFamily = DmSansFontFamily,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 15.sp,
+                                color = if (isValid) Color.White else MaterialTheme.colorScheme.outline
+                            )
                         }
                     }
                 }
             }
         }
 
-        // Al verificar: Tarjeta con nombre completo (multilínea), tamaño, partes y hash pendiente (NUNCA "null...null")
+        // Tarjeta del archivo con transición suave
         item {
             AnimatedVisibility(
                 visible = isValid,
-                enter = fadeIn() + slideInVertically()
+                enter = fadeIn(tween(300)) + expandVertically(tween(350)),
+                exit = fadeOut(tween(200)) + shrinkVertically(tween(250))
             ) {
                 if (parseState is ParseUiState.Valid) {
-                    val manifest = parseState.manifest
-                    VerifiedManifestCard(manifest = manifest)
-                }
-            }
-
-            AnimatedVisibility(
-                visible = isInvalid && codeText.isNotBlank(),
-                enter = fadeIn()
-            ) {
-                if (parseState is ParseUiState.Invalid) {
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(22.dp),
-                        colors = CardDefaults.cardColors(
-                            containerColor = ErrorRose.copy(alpha = 0.12f)
-                        ),
-                        border = CardDefaults.outlinedCardBorder().copy(
-                            brush = androidx.compose.ui.graphics.SolidColor(ErrorRose.copy(alpha = 0.35f))
-                        )
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(16.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(12.dp)
-                        ) {
-                            Icon(Icons.Default.ErrorOutline, contentDescription = null, tint = ErrorRose)
-                            Column {
-                                Text(
-                                    text = "Formato de código inválido",
-                                    fontFamily = BricolageGrotesqueFontFamily,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 14.sp,
-                                    color = ErrorRose
-                                )
-                                Text(
-                                    text = parseState.message,
-                                    fontFamily = DmSansFontFamily,
-                                    fontSize = 12.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
-                    }
+                    VerifiedManifestCard(manifest = parseState.manifest)
                 }
             }
         }
@@ -736,11 +727,6 @@ fun DownloadInputTab(
     }
 }
 
-/**
- * Tarjeta de Verificación:
- * Muestra el nombre completo del archivo (permite varias líneas),
- * tamaño, número de partes y "Hash pendiente" (nunca muestra "null...null").
- */
 @Composable
 fun VerifiedManifestCard(
     manifest: MoodleManifest
@@ -788,7 +774,6 @@ fun VerifiedManifestCard(
                 }
 
                 Column(modifier = Modifier.weight(1f)) {
-                    // Nombre completo del archivo (permite múltiples líneas)
                     Text(
                         text = manifest.filename,
                         fontFamily = BricolageGrotesqueFontFamily,
@@ -873,7 +858,7 @@ fun VerifiedManifestCard(
                             .padding(horizontal = 6.dp, vertical = 2.dp)
                     ) {
                         Text(
-                            text = "Verificado",
+                            text = "Listo",
                             fontFamily = DmSansFontFamily,
                             fontSize = 10.sp,
                             fontWeight = FontWeight.Bold,
@@ -889,6 +874,7 @@ fun VerifiedManifestCard(
 /**
  * Pantalla En curso:
  * - Partes como bloques en fila (uno por parte): completadas con degradado, actual con pulso suave, pendientes en gris.
+ * - Controles Pausar, Reanudar, Cancelar.
  * - Porcentaje grande (40px).
  * - Velocidad en etiqueta aparte.
  * - Tiempo restante debajo.
@@ -898,9 +884,12 @@ fun VerifiedManifestCard(
  */
 @Composable
 fun ActiveTasksTab(
-    activeDownloads: List<ActiveDownloadUi>,
+    activeDownloads: List<DownloadEntity>,
     completedDownloads: List<DownloadEntity>,
     listState: LazyListState,
+    onPause: (String) -> Unit,
+    onResume: (String) -> Unit,
+    onRetry: (String) -> Unit,
     onCancel: (String) -> Unit,
     onDeleteCompleted: (String) -> Unit,
     onClearCompleted: () -> Unit,
@@ -916,7 +905,6 @@ fun ActiveTasksTab(
             .padding(horizontal = 20.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(18.dp)
     ) {
-        // Sección 1: Descargas Activas
         if (activeDownloads.isEmpty()) {
             item {
                 Card(
@@ -986,6 +974,9 @@ fun ActiveTasksTab(
                 ActiveTaskCard(
                     task = task,
                     reducedMotion = reducedMotion,
+                    onPause = { onPause(task.id) },
+                    onResume = { onResume(task.id) },
+                    onRetry = { onRetry(task.id) },
                     onCancel = { onCancel(task.id) }
                 )
             }
@@ -1115,24 +1106,18 @@ fun ActiveTasksTab(
     }
 }
 
-/**
- * Tarjeta de Tarea Activa:
- * - Partes como bloques en fila (uno por parte): completadas con degradado, actual con pulso suave, pendientes en gris.
- * - Porcentaje grande (40px).
- * - Velocidad en etiqueta aparte.
- * - Tiempo restante debajo.
- * - Botón "Cancelar descarga" en rojo.
- */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun ActiveTaskCard(
-    task: ActiveDownloadUi,
+    task: DownloadEntity,
     reducedMotion: Boolean,
+    onPause: () -> Unit,
+    onResume: () -> Unit,
+    onRetry: () -> Unit,
     onCancel: () -> Unit
 ) {
     val fileIcon = getFileIconForExtension(task.fileName)
 
-    // Animación de pulso suave para la parte actual (respetando prefers-reduced-motion)
     val infiniteTransition = rememberInfiniteTransition(label = "part_pulse")
     val pulseAlpha by if (reducedMotion) {
         remember { mutableStateOf(1f) }
@@ -1148,6 +1133,14 @@ fun ActiveTaskCard(
         )
     }
 
+    val isPaused = task.status == DownloadState.PAUSED.name
+    val isError = task.status == DownloadState.ERROR.name
+    val isQueued = task.status == DownloadState.QUEUED.name
+
+    val percent = if (task.totalBytes > 0) {
+        ((task.downloadedBytes * 100) / task.totalBytes).toInt().coerceIn(0, 99)
+    } else 0
+
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(26.dp),
@@ -1155,7 +1148,11 @@ fun ActiveTaskCard(
             containerColor = MaterialTheme.colorScheme.surface
         ),
         border = CardDefaults.outlinedCardBorder().copy(
-            brush = androidx.compose.ui.graphics.SolidColor(ElectricBlue.copy(alpha = 0.35f))
+            brush = androidx.compose.ui.graphics.SolidColor(
+                if (isError) ErrorRose.copy(alpha = 0.4f)
+                else if (isPaused) WarningAmber.copy(alpha = 0.4f)
+                else ElectricBlue.copy(alpha = 0.35f)
+            )
         )
     ) {
         Column(
@@ -1164,7 +1161,6 @@ fun ActiveTaskCard(
                 .padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // Cabecera de la tarea
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -1174,13 +1170,17 @@ fun ActiveTaskCard(
                     modifier = Modifier
                         .size(44.dp)
                         .clip(RoundedCornerShape(14.dp))
-                        .background(BrandGradient),
+                        .then(
+                            if (isError) Modifier.background(ErrorRose.copy(alpha = 0.15f))
+                            else if (isPaused) Modifier.background(WarningAmber.copy(alpha = 0.15f))
+                            else Modifier.background(BrandGradient)
+                        ),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
                         imageVector = fileIcon,
                         contentDescription = null,
-                        tint = Color.White,
+                        tint = if (isError) ErrorRose else if (isPaused) WarningAmber else Color.White,
                         modifier = Modifier.size(22.dp)
                     )
                 }
@@ -1203,8 +1203,8 @@ fun ActiveTaskCard(
                     )
                 }
 
-                // Velocidad en una etiqueta aparte
-                if (task.speedBps > 0) {
+                // Velocidad en etiqueta aparte
+                if (task.speedBps > 0 && !isPaused && !isError) {
                     Box(
                         modifier = Modifier
                             .clip(RoundedCornerShape(12.dp))
@@ -1233,7 +1233,7 @@ fun ActiveTaskCard(
             ) {
                 Row(verticalAlignment = Alignment.Bottom) {
                     Text(
-                        text = "${task.percent}",
+                        text = "$percent",
                         fontFamily = BricolageGrotesqueFontFamily,
                         fontWeight = FontWeight.ExtraBold,
                         fontSize = 40.sp,
@@ -1245,22 +1245,21 @@ fun ActiveTaskCard(
                         fontFamily = BricolageGrotesqueFontFamily,
                         fontWeight = FontWeight.Bold,
                         fontSize = 20.sp,
-                        color = ElectricCyan,
+                        color = if (isError) ErrorRose else if (isPaused) WarningAmber else ElectricCyan,
                         modifier = Modifier.padding(start = 2.dp, bottom = 4.dp)
                     )
                 }
 
                 Column(horizontalAlignment = Alignment.End) {
                     Text(
-                        text = "Parte ${task.currentPartIndex} de ${task.totalParts}",
+                        text = if (isError) "Error" else if (isPaused) "Pausada" else if (isQueued) "En cola" else "Parte ${task.currentPart} de ${task.totalParts}",
                         fontFamily = DmSansFontFamily,
                         fontWeight = FontWeight.SemiBold,
                         fontSize = 13.sp,
-                        color = MaterialTheme.colorScheme.onSurface
+                        color = if (isError) ErrorRose else if (isPaused) WarningAmber else MaterialTheme.colorScheme.onSurface
                     )
 
-                    // Tiempo restante debajo
-                    if (task.etaSeconds > 0) {
+                    if (task.etaSeconds > 0 && !isPaused && !isError) {
                         Text(
                             text = "~${FileUtils.formatDuration(task.etaSeconds)} restantes",
                             fontFamily = DmSansFontFamily,
@@ -1271,8 +1270,7 @@ fun ActiveTaskCard(
                 }
             }
 
-            // Las partes como bloques en fila (uno por parte)
-            // Completadas con degradado, actual con pulso suave, pendientes en gris
+            // Bloques de partes en fila
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 FlowRow(
                     modifier = Modifier.fillMaxWidth(),
@@ -1281,8 +1279,8 @@ fun ActiveTaskCard(
                     maxItemsInEachRow = task.totalParts.coerceAtMost(16)
                 ) {
                     for (i in 1..task.totalParts) {
-                        val isDone = i < task.currentPartIndex
-                        val isCurrent = i == task.currentPartIndex
+                        val isDone = i <= task.completedParts
+                        val isCurrent = i == task.currentPart && !isPaused && !isError
 
                         Box(
                             modifier = Modifier
@@ -1303,24 +1301,68 @@ fun ActiveTaskCard(
                     }
                 }
 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
+                if (!task.errorMessage.isNullOrBlank()) {
                     Text(
-                        text = task.statusMessage,
+                        text = task.errorMessage,
                         fontFamily = DmSansFontFamily,
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        fontSize = 12.sp,
+                        color = if (isError) ErrorRose else WarningAmber
                     )
                 }
             }
 
-            // Botón "Cancelar descarga" en rojo suave
+            // Botones de acción: Pausar / Reanudar / Reintentar y Cancelar
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
+                if (isPaused) {
+                    Button(
+                        onClick = onResume,
+                        modifier = Modifier
+                            .weight(1f)
+                            .defaultMinSize(minHeight = 44.dp),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = ElectricBlue,
+                            contentColor = Color.White
+                        )
+                    ) {
+                        Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Reanudar", fontFamily = DmSansFontFamily, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    }
+                } else if (isError) {
+                    Button(
+                        onClick = onRetry,
+                        modifier = Modifier
+                            .weight(1f)
+                            .defaultMinSize(minHeight = 44.dp),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = WarningAmber,
+                            contentColor = Color.White
+                        )
+                    ) {
+                        Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Reintentar", fontFamily = DmSansFontFamily, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    }
+                } else {
+                    OutlinedButton(
+                        onClick = onPause,
+                        modifier = Modifier
+                            .weight(1f)
+                            .defaultMinSize(minHeight = 44.dp),
+                        shape = RoundedCornerShape(14.dp)
+                    ) {
+                        Icon(Icons.Default.Pause, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Pausar", fontFamily = DmSansFontFamily, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    }
+                }
+
                 OutlinedButton(
                     onClick = onCancel,
                     shape = RoundedCornerShape(14.dp),
@@ -1333,7 +1375,7 @@ fun ActiveTaskCard(
                     Icon(Icons.Default.Clear, contentDescription = null, modifier = Modifier.size(15.dp))
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = "Cancelar descarga",
+                        text = "Cancelar",
                         fontFamily = DmSansFontFamily,
                         fontWeight = FontWeight.Bold,
                         fontSize = 13.sp
@@ -1344,10 +1386,6 @@ fun ActiveTaskCard(
     }
 }
 
-/**
- * Tarjeta de Archivo Completado:
- * Muestra botón "Instalar / Abrir" destacado, compartir y eliminar.
- */
 @Composable
 fun CompletedFileCard(
     item: DownloadEntity,
@@ -1359,7 +1397,6 @@ fun CompletedFileCard(
     val isApk = item.fileName.endsWith(".apk", ignoreCase = true)
     val isSuccess = item.status == DownloadState.COMPLETED.name
     val isWarning = item.status == "COMPLETED_WARN_HASH"
-    val isFailed = item.status == DownloadState.FAILED.name
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -1370,8 +1407,7 @@ fun CompletedFileCard(
         border = CardDefaults.outlinedCardBorder().copy(
             brush = androidx.compose.ui.graphics.SolidColor(
                 if (isSuccess) SuccessGreen.copy(alpha = 0.35f)
-                else if (isWarning) WarningAmber.copy(alpha = 0.35f)
-                else ErrorRose.copy(alpha = 0.35f)
+                else WarningAmber.copy(alpha = 0.35f)
             )
         )
     ) {
@@ -1392,15 +1428,14 @@ fun CompletedFileCard(
                         .clip(RoundedCornerShape(12.dp))
                         .background(
                             if (isSuccess) SuccessGreen.copy(alpha = 0.15f)
-                            else if (isWarning) WarningAmber.copy(alpha = 0.15f)
-                            else ErrorRose.copy(alpha = 0.15f)
+                            else WarningAmber.copy(alpha = 0.15f)
                         ),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
                         imageVector = fileIcon,
                         contentDescription = null,
-                        tint = if (isSuccess) SuccessGreen else if (isWarning) WarningAmber else ErrorRose,
+                        tint = if (isSuccess) SuccessGreen else WarningAmber,
                         modifier = Modifier.size(22.dp)
                     )
                 }
@@ -1425,11 +1460,11 @@ fun CompletedFileCard(
                         )
                         Text(text = "•", color = MaterialTheme.colorScheme.outline)
                         Text(
-                            text = if (isSuccess) "Completado" else if (isWarning) "Guardado (aviso hash)" else "Fallo",
+                            text = if (isSuccess) "Completado" else "Guardado (aviso hash)",
                             fontFamily = DmSansFontFamily,
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold,
-                            color = if (isSuccess) SuccessGreen else if (isWarning) WarningAmber else ErrorRose
+                            color = if (isSuccess) SuccessGreen else WarningAmber
                         )
                     }
                 }
@@ -1443,39 +1478,37 @@ fun CompletedFileCard(
             }
 
             // Botón Instalar / Abrir
-            if (isSuccess || isWarning) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Button(
+                    onClick = onOpen,
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .defaultMinSize(minHeight = 44.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (isApk) SuccessGreen else ElectricBlue,
+                        contentColor = Color.White
+                    )
                 ) {
-                    Button(
-                        onClick = onOpen,
-                        shape = RoundedCornerShape(14.dp),
-                        modifier = Modifier
-                            .weight(1f)
-                            .defaultMinSize(minHeight = 44.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = if (isApk) SuccessGreen else ElectricBlue,
-                            contentColor = Color.White
-                        )
-                    ) {
-                        Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = if (isApk) "Instalar / Abrir" else "Abrir archivo",
-                            fontFamily = DmSansFontFamily,
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
+                    Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = if (isApk) "Instalar / Abrir" else "Abrir archivo",
+                        fontFamily = DmSansFontFamily,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
 
-                    OutlinedButton(
-                        onClick = onShare,
-                        shape = RoundedCornerShape(14.dp),
-                        modifier = Modifier.defaultMinSize(minWidth = 44.dp, minHeight = 44.dp)
-                    ) {
-                        Icon(Icons.Default.Share, contentDescription = "Compartir", modifier = Modifier.size(16.dp))
-                    }
+                OutlinedButton(
+                    onClick = onShare,
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier.defaultMinSize(minWidth = 44.dp, minHeight = 44.dp)
+                ) {
+                    Icon(Icons.Default.Share, contentDescription = "Compartir", modifier = Modifier.size(16.dp))
                 }
             }
         }
@@ -1492,6 +1525,9 @@ fun SettingsBottomSheet(
     onAutoRetryChange: (Boolean) -> Unit,
     onVibrateChange: (Boolean) -> Unit,
     onAutoClearChange: (Boolean) -> Unit,
+    onShowProgressNotifsChange: (Boolean) -> Unit,
+    onSoundOnCompleteChange: (Boolean) -> Unit,
+    onOpenWelcome: () -> Unit,
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
@@ -1531,8 +1567,39 @@ fun SettingsBottomSheet(
                 }
             }
 
-            // Sección 1: Tema
+            // Sección 1: Descargas sin interrupciones (Controles de permisos y batería permanentes)
             item {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "Descargas sin interrupciones",
+                        fontFamily = DmSansFontFamily,
+                        style = MaterialTheme.typography.labelLarge,
+                        color = ElectricCyan,
+                        fontWeight = FontWeight.Bold
+                    )
+
+                    Button(
+                        onClick = onOpenWelcome,
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .defaultMinSize(minHeight = 46.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                            contentColor = MaterialTheme.colorScheme.onSurface
+                        )
+                    ) {
+                        Icon(Icons.Default.BatteryChargingFull, contentDescription = null, tint = ElectricCyan, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Verificar permisos y batería en segundo plano", fontFamily = DmSansFontFamily, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                    }
+                }
+            }
+
+            // Sección 2: Tema visual
+            item {
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                Spacer(modifier = Modifier.height(4.dp))
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
                         text = "Tema visual",
@@ -1582,10 +1649,10 @@ fun SettingsBottomSheet(
                 }
             }
 
-            // Sección 2: Red y Descarga
+            // Sección 3: Red y Descarga
             item {
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-                Spacer(modifier = Modifier.height(6.dp))
+                Spacer(modifier = Modifier.height(4.dp))
                 Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
                     Text(
                         text = "Red y Descargas",
@@ -1613,17 +1680,33 @@ fun SettingsBottomSheet(
                 }
             }
 
-            // Sección 3: Avisos
+            // Sección 4: Avisos y Comportamiento
             item {
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-                Spacer(modifier = Modifier.height(6.dp))
+                Spacer(modifier = Modifier.height(4.dp))
                 Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
                     Text(
-                        text = "Avisos y Háptica",
+                        text = "Avisos y Comportamiento",
                         fontFamily = DmSansFontFamily,
                         style = MaterialTheme.typography.labelLarge,
                         color = ElectricCyan,
                         fontWeight = FontWeight.Bold
+                    )
+
+                    SettingToggleRow(
+                        title = "Notificaciones de progreso",
+                        subtitle = "Mostrar barra y porcentaje en la cortina del sistema",
+                        icon = Icons.Default.Notifications,
+                        checked = settings.showProgressNotifications,
+                        onCheckedChange = onShowProgressNotifsChange
+                    )
+
+                    SettingToggleRow(
+                        title = "Sonido al terminar",
+                        subtitle = "Tono de notificación cuando el archivo esté listo",
+                        icon = Icons.Default.VolumeUp,
+                        checked = settings.soundOnComplete,
+                        onCheckedChange = onSoundOnCompleteChange
                     )
 
                     SettingToggleRow(
@@ -1753,9 +1836,9 @@ private fun getFileIconForExtension(filename: String): ImageVector {
 
 private fun isReducedMotion(context: Context): Boolean {
     return try {
-        val scale = Settings.Global.getFloat(
+        val scale = android.provider.Settings.Global.getFloat(
             context.contentResolver,
-            Settings.Global.TRANSITION_ANIMATION_SCALE,
+            android.provider.Settings.Global.TRANSITION_ANIMATION_SCALE,
             1f
         )
         scale == 0f

@@ -132,13 +132,13 @@ class MoodleDownloadWorker(
         var mediaStoreUri: Uri? = null
 
         try {
-            downloadDao.updateProgress(downloadId, DownloadState.DOWNLOADING_PART.name, 0, 0L)
+            downloadDao.updateProgress(downloadId, DownloadState.DOWNLOADING.name, 0, 0, 0L, 0L, 0L)
 
             // Paso C: Descargar cada parte en un archivo temporal
             for (part in orderedParts) {
                 if (isStopped) {
                     cleanIncompleteTmp(partsDirectory, part.index)
-                    downloadDao.updateProgress(downloadId, DownloadState.CANCELLED.name, part.index, calculateTotalExistingBytes(partsDirectory, orderedParts))
+                    downloadDao.updateProgress(downloadId, DownloadState.CANCELLED.name, part.index, part.index - 1, calculateTotalExistingBytes(partsDirectory, orderedParts), 0L, 0L)
                     return Result.failure(workDataOf("error" to "Descarga cancelada por el usuario."))
                 }
 
@@ -191,7 +191,7 @@ class MoodleDownloadWorker(
                 manifestSize = totalManifestSize,
                 currentPartBytes = 0L
             )
-            downloadDao.updateProgress(downloadId, DownloadState.RECONSTRUCTING.name, totalParts, totalManifestSize)
+            downloadDao.updateProgress(downloadId, DownloadState.RECONSTRUCTING.name, totalParts, totalParts, totalManifestSize, 0L, 0L)
 
             // Crear archivo en MediaStore con IS_PENDING = 1 en Download/Chunk
             val resolver = applicationContext.contentResolver
@@ -285,7 +285,7 @@ class MoodleDownloadWorker(
             mediaStoreUri?.let { uri ->
                 try { applicationContext.contentResolver.delete(uri, null, null) } catch (_: Exception) {}
             }
-            downloadDao.updateProgress(downloadId, DownloadState.CANCELLED.name, 0, 0L)
+            downloadDao.updateProgress(downloadId, DownloadState.CANCELLED.name, 0, 0, 0L, 0L, 0L)
             showFinishedNotification("Descarga cancelada", "La descarga fue cancelada por el usuario.", false)
             return Result.failure(workDataOf("error" to "Descarga cancelada."))
         } catch (e: Exception) {

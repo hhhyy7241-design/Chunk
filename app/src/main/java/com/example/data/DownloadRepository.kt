@@ -1,17 +1,9 @@
 package com.example.data
 
 import android.content.Context
-import androidx.work.Constraints
-import androidx.work.ExistingWorkPolicy
-import androidx.work.NetworkType
-import androidx.work.OneTimeWorkRequestBuilder
-import androidx.work.WorkInfo
-import androidx.work.WorkManager
-import androidx.work.workDataOf
 import com.example.model.DownloadState
 import com.example.model.MoodleManifest
-import com.example.parser.MoodleCodeParser
-import com.example.worker.MoodleDownloadWorker
+import com.example.service.DownloadService
 import kotlinx.coroutines.flow.Flow
 import java.util.UUID
 
@@ -19,13 +11,10 @@ class DownloadRepository(private val context: Context) {
 
     private val database = AppDatabase.getDatabase(context)
     private val downloadDao = database.downloadDao()
-    private val workManager = WorkManager.getInstance(context)
-    private val settingsManager = SettingsManager(context)
 
     val allDownloads: Flow<List<DownloadEntity>> = downloadDao.getAllDownloads()
-
-    fun getWorkInfosByTagFlow(tag: String = "moodle_download"): Flow<List<WorkInfo>> =
-        workManager.getWorkInfosByTagFlow(tag)
+    val activeDownloads: Flow<List<DownloadEntity>> = downloadDao.getActiveDownloads()
+    val completedDownloads: Flow<List<DownloadEntity>> = downloadDao.getCompletedDownloads()
 
     suspend fun enqueueDownload(
         code: String,
@@ -34,73 +23,67 @@ class DownloadRepository(private val context: Context) {
     ): String {
         val downloadId = UUID.randomUUID().toString()
         val finalFileName = customFileName?.ifBlank { null } ?: manifest.filename
-        val codeFingerprint = MoodleCodeParser.getCodeFingerprint(code)
-        val currentSettings = settingsManager.settings.value
-
-        val constraints = Constraints.Builder()
-            .setRequiredNetworkType(
-                if (currentSettings.wifiOnly) NetworkType.UNMETERED else NetworkType.CONNECTED
-            )
-            .build()
-
-        val workRequest = OneTimeWorkRequestBuilder<MoodleDownloadWorker>()
-            .setInputData(
-                workDataOf(
-                    MoodleDownloadWorker.KEY_DOWNLOAD_ID to downloadId,
-                    MoodleDownloadWorker.KEY_CODE to code,
-                    MoodleDownloadWorker.KEY_CUSTOM_FILENAME to finalFileName
-                )
-            )
-            .setConstraints(constraints)
-            .addTag("moodle_download")
-            .addTag("id_$downloadId")
-            .build()
 
         val entity = DownloadEntity(
             id = downloadId,
-            workId = workRequest.id.toString(),
-            code = code,
             fileName = finalFileName,
-            totalParts = manifest.parts.size,
-            currentPart = 0,
             totalBytes = manifest.size,
+            totalParts = manifest.parts.size,
+            completedParts = 0,
+            currentPart = 0,
             downloadedBytes = 0L,
-            status = DownloadState.PREPARING.name,
+            status = DownloadState.QUEUED.name,
+            savedPath = "Download/Chunk/$finalFileName",
+            code = code,
             sha256Expected = manifest.sha256,
             createdAt = System.currentTimeMillis()
         )
 
         downloadDao.insert(entity)
 
-        // Política que evita dos descargas simultáneas del mismo flujo (mismo código)
-        workManager.enqueueUniqueWork(
-            "download_flow_$codeFingerprint",
-            ExistingWorkPolicy.KEEP,
-            workRequest
-        )
+        // Iniciar el Foreground Service nativo con WakeLock y WifiLock
+        DownloadService.startDownload(context, downloadId)
 
         return downloadId
     }
 
+    suspend fun pauseDownload(id: String) {
+        DownloadService.pauseDownload(context, id)
+        downloadDao.updateStatus(id, DownloadState.PAUSED.name, null)
+    }
+
+    suspend fun resumeDownload(id: String) {
+        downloadDao.updateStatus(id, DownloadState.QUEUED.name, null)
+        DownloadService.resumeDownload(context, id)
+    }
+
+    suspend fun retryDownload(id: String) {
+        downloadDao.updateStatus(id, DownloadState.QUEUED.name, null)
+        DownloadService.startDownload(context, id)
+    }
+
     suspend fun cancelDownload(id: String) {
-        val download = downloadDao.getDownloadById(id)
-        if (download != null) {
-            val codeFingerprint = MoodleCodeParser.getCodeFingerprint(download.code)
-            workManager.cancelUniqueWork("download_flow_$codeFingerprint")
-            if (download.workId != null) {
-                try {
-                    workManager.cancelWorkById(UUID.fromString(download.workId))
-                } catch (_: Exception) {}
-            }
-            downloadDao.updateProgress(id, DownloadState.CANCELLED.name, download.currentPart, download.downloadedBytes)
-        }
+        DownloadService.cancelDownload(context, id)
+        downloadDao.updateStatus(id, DownloadState.CANCELLED.name, null)
     }
 
     suspend fun deleteDownload(id: String) {
+        DownloadService.cancelDownload(context, id)
         downloadDao.deleteById(id)
+    }
+
+    suspend fun clearCompleted() {
+        downloadDao.deleteCompleted()
     }
 
     suspend fun clearHistory() {
         downloadDao.deleteAll()
+    }
+
+    suspend fun resumePendingDownloadsOnStartup() {
+        val pending = downloadDao.getUnfinishedDownloads()
+        for (item in pending) {
+            DownloadService.startDownload(context, item.id)
+        }
     }
 }
